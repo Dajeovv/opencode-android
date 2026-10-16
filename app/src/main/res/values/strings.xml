@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenCode Android</string>
+    <string name="server_url">http://127.0.0.1:4096 · Termux local</string>
+    <string name="steps_title">Un toque abre el chat: root → servidor → UI</string>
+    <string name="steps_noroot">Sin root: 1) instala Termux (botón GitHub) y ábrelo una vez · 2) pulsa Setup Termux y pega el comando en Termux · 3) Iniciar y abrir</string>
+    <string name="log_title">Registro</string>
+    <string name="clear">Limpiar</string>
+</resources>

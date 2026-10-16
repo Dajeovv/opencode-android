@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Marca oficial de opencode: "0" pixelado (anillo blanco, interior
+     oscuro arriba / gris abajo) sobre fondo #131010. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M32,27h43v53h-43z" />
+
+    <path
+        android:fillColor="#131010"
+        android:pathData="M43,38h21v31h-21z" />
+
+    <path
+        android:fillColor="#5A5858"
+        android:pathData="M43,48h21v21h-21z" />
+</vector>

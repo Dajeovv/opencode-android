@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="status_open">#2E7D32</color>
+    <color name="status_closed">#C62828</color>
+    <color name="status_unknown">#9E9E9E</color>
+    <color name="splash_bg">#131010</color>
+    <color name="splash_accent">#5EEAD4</color>
+    <color name="splash_text">#E6EDF3</color>
+    <color name="splash_sub">#9AA7B4</color>
+</resources>

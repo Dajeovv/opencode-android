@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Logo para el splash: la marca flotando (interior oscuro transparente). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M24,18h48v60h-48z M36,30h24v36h-24z" />
+
+    <path
+        android:fillColor="#5A5858"
+        android:pathData="M36,42h24v24h-24z" />
+</vector>

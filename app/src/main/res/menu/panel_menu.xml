@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_controls"
+        android:title="Controles"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:contentDescription="Controles" />
+    <item
+        android:id="@+id/action_lang"
+        android:title="ES/EN" />
+</menu>
