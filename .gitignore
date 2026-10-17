@@ -1,26 +1,24 @@
 # Gradle
 .gradle/
 build/
-# Android Studio
+
+# Android Studio / IDE
 .idea/
 *.iml
 local.properties
-# Salidas de compilación: los APK van a GitHub Releases, nunca a git
+
+# Build outputs (compiled APKs are published on GitHub Releases, never committed)
 *.apk
 *.aab
 *.ap_
-# Firmas y secretos (si algún día hay release firmada / Firebase)
+
+# Signing material and secrets
 *.jks
 *.keystore
 keystore.properties
 google-services.json
-# Logs locales
+
+# Logs and OS noise
 *.log
-# Material de desarrollo con datos personales (NO versionar):
-# notas internas, capturas de pantalla y APKs compilados
-SEGUIR-AQUI.md
-capturas/
-apks/
-# Sistema
 .DS_Store
 Thumbs.db
