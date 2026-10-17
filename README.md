@@ -66,6 +66,10 @@ Android launcher for [opencode](https://github.com/anomalyco/opencode) running o
 - On some phones the app freezer can pause long background downloads (see the watchdog interval).
 - The direct "install unknown apps" screen does not exist on all vendors: the app falls back to the app-details page, where the same toggle lives.
 
+## Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Security reports go through the private channel described in [SECURITY.md](SECURITY.md). Human authorship of this AI-assisted project is documented in [AUTHORSHIP.md](AUTHORSHIP.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
