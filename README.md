@@ -51,10 +51,10 @@ Android launcher for [opencode](https://github.com/anomalyco/opencode) running o
 
 ## Build from source
 
-- JDK 17, Android SDK with `compileSdk 34`, Gradle 8.7 + Android Gradle Plugin 8.5.2.
+- JDK 17, Android SDK with `compileSdk 34`; the repo ships the Gradle wrapper (Gradle 8.7 + Android Gradle Plugin 8.5.2).
 - Create `local.properties` with `sdk.dir=/path/to/your/sdk` (never committed).
-- Debug: `gradle :app:assembleDebug --offline` (first time, online for dependencies).
-- Signed release: `gradle :app:assembleRelease` (needs a `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; that file is never committed — keep a copy of the `.jks` and its passwords outside the repo).
+- Debug: `./gradlew :app:assembleDebug` (the first run downloads dependencies).
+- Signed release: `./gradlew :app:assembleRelease` (needs a `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; that file is never committed — keep a copy of the `.jks` and its passwords outside the repo).
 
 ## Publishing a version
 
