@@ -302,8 +302,8 @@ public class MainActivity extends AppCompatActivity {
             String stab = ok ? RootUtil.stabilizeAndroid() : "sin root: modo sin root activo";
             runOnUiThread(() -> {
                 log("Arranque auto:\n" + rid.split("\n")[0] + "\n" + stab);
-                btnStart.setEnabled(true);
                 applyOnboarding();
+                refreshStepStatus();
             });
         }).start();
 
@@ -512,15 +512,9 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        btnStart.setOnClickListener(v -> {
-            // Sin asistente completo no se arranca a ciegas: rebota al paso a paso.
-            // (El propio asistente llama a startServerSequence directo, sin pasar por aqui.)
-            if (!wizardDone()) {
-                showWizardDialog();
-                return;
-            }
-            startServerSequence();
-        });
+        // El boton va oscurecido hasta que los 5 pasos esten en verde
+        // (refreshStepStatus): deshabilitado no responde al toque, sin dialogos.
+        btnStart.setOnClickListener(v -> startServerSequence());
 
         btnTermux.setOnClickListener(v -> {
             copyManualCommand();
@@ -724,15 +718,9 @@ public class MainActivity extends AppCompatActivity {
         refreshGuide();
         checkForUpdate(false);
         checkLauncherUpdate(false);
-        // Sin asistente completo se muestra (con sus estados frescos). Con 4s de
-        // margen: si el servidor ya responde, el auto-complete de checkStatus lo
-        // marca hecho y el dialogo ni aparece (migra instalaciones sanas).
-        if (!wizardDone() && wizDlg == null && !fullscreen) {
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                if (!wizardDone() && wizDlg == null && !fullscreen && !isFinishing())
-                    showWizardDialog();
-            }, 4000);
-        }
+        // Al volver de Ajustes/Termux se recalculan los pasos: la tira de
+        // estados y el oscurecido de Iniciar quedan al dia solos.
+        refreshStepStatus();
     }
 
     /** Paso 1 automatico: baja de GitHub el APK de Termux para esta ABI y abre el instalador. */
@@ -790,6 +778,12 @@ public class MainActivity extends AppCompatActivity {
                             + rel.optString("tag_name", "?"));
                 }
                 termuxApkName = "termux-" + suffix + ".apk";
+                // Descarga en la carpeta privada de la app: en Download/ el
+                // fichero es del MediaProvider y sin "todos los archivos" la
+                // app no puede leerlo (el instalador daba "error al analizar
+                // el paquete"). En la privada siempre es legible.
+                java.io.File stale = new java.io.File(getExternalFilesDir("updates"), termuxApkName);
+                if (stale.exists()) stale.delete();
                 android.app.DownloadManager dm =
                         (android.app.DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
                 android.app.DownloadManager.Request req =
@@ -799,8 +793,7 @@ public class MainActivity extends AppCompatActivity {
                 req.setMimeType("application/vnd.android.package-archive");
                 req.setNotificationVisibility(
                         android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
-                        "opencode-android/" + termuxApkName);
+                req.setDestinationInExternalFilesDir(this, "updates", termuxApkName);
                 termuxDownloadId = dm.enqueue(req);
                 getSharedPreferences("app", MODE_PRIVATE).edit()
                         .putString("termux_apk", termuxApkName).apply();
@@ -833,9 +826,10 @@ public class MainActivity extends AppCompatActivity {
                 public void onReceive(Context ctx, Intent intent) {
                     long rid = intent.getLongExtra(
                             android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                    if (rid == termuxDownloadId) {
-                        stopTermuxDlPoll();
-                        installTermuxApk();
+                    // El aviso salta tambien si fallo: se consulta el estado
+                    // real y solo se instala si la descarga esta completa.
+                    if (rid == termuxDownloadId && termuxDlTick != null) {
+                        pollTermuxDownloadOnce();
                     }
                 }
             };
@@ -879,6 +873,11 @@ public class MainActivity extends AppCompatActivity {
                     setBusy(false);
                     getSharedPreferences("app", MODE_PRIVATE).edit()
                             .remove("termux_dl_id").apply();
+                    long totalSz = c.getLong(c.getColumnIndex(
+                            android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+                    log("Descarga completa (" + mbText(totalSz) + "). Abriendo instalador...");
+                    txtStatus.setText(T("Descarga completa, confirma la instalacion",
+                            "Download complete, confirm the install"));
                     installTermuxApk();
                     return true;
                 }
@@ -952,9 +951,7 @@ public class MainActivity extends AppCompatActivity {
     private void installTermuxApk() {
         if (termuxInstalling) return;
         termuxInstalling = true;        try {
-            java.io.File apk = new java.io.File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "opencode-android/" + termuxApkName);
+            java.io.File apk = new java.io.File(getExternalFilesDir("updates"), termuxApkName);
             Uri uri = androidx.core.content.FileProvider.getUriForFile(
                     this, getPackageName() + ".fileprovider", apk);
             Intent in = new Intent(Intent.ACTION_VIEW);
@@ -1007,8 +1004,11 @@ public class MainActivity extends AppCompatActivity {
         try {
             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             cm.setPrimaryClip(ClipData.newPlainText("opencode-setup", block));
+            getSharedPreferences("app", MODE_PRIVATE).edit()
+                    .putBoolean("setup_tried", true).apply();
             log("Setup copiado. Pegalo UNA vez en Termux y espera a que acabe;"
-                    + " luego cierra Termux del todo, reabrelo y vuelve aqui (avanzo solo):\n" + block);
+                    + " luego cierra Termux del todo, reabrelo y vuelve aqui:"
+                    + " al completar los puntos, Iniciar y abrir se enciende:\n" + block);
             snack(T("Setup copiado: pegalo en Termux", "Setup copied: paste it in Termux"));
         } catch (Exception e) {
             snack(T("No se pudo copiar", "Could not copy"));
@@ -1106,7 +1106,7 @@ public class MainActivity extends AppCompatActivity {
             if (!TermuxRunner.isTermuxInstalled(this)) {
                 runOnUiThread(() -> {
                     setBusy(false);
-                    btnStart.setEnabled(true);
+                    refreshStepStatus();
                     setDot(false);
                     txtStatus.setText(T("Falta Termux", "Termux missing"));
                     log("Falta com.termux: instalalo desde GitHub (boton de abajo),"
@@ -1143,7 +1143,7 @@ public class MainActivity extends AppCompatActivity {
             String transcript = t.toString();
             runOnUiThread(() -> {
                 setBusy(false);
-                btnStart.setEnabled(true);
+                refreshStepStatus();
                 serverOpen = done;
                 refreshActionButtons();
                 setDot(done);
@@ -1188,7 +1188,7 @@ public class MainActivity extends AppCompatActivity {
         // Sin Termux no hay donde correr: igual con root que sin root, a descargarlo.
         if (!TermuxRunner.isTermuxInstalled(this)) {
             setBusy(false);
-            btnStart.setEnabled(true);
+            refreshStepStatus();
             setDot(false);
             txtStatus.setText(T("Falta Termux", "Termux missing"));
             log("Falta com.termux: instalalo (abajo te digo cual), abrelo una vez"
@@ -1208,7 +1208,7 @@ public class MainActivity extends AppCompatActivity {
             if (!RootUtil.isRooted(rid)) {
                 runOnUiThread(() -> {
                     setBusy(false);
-                    btnStart.setEnabled(true);
+                    refreshStepStatus();
                     setDot(false);
                     txtStatus.setText(T("Root: denegado", "Root: denied"));
                     log("$ su -c id\n" + rid
@@ -1261,7 +1261,7 @@ public class MainActivity extends AppCompatActivity {
             String transcript = t.toString();
             runOnUiThread(() -> {
                 setBusy(false);
-                btnStart.setEnabled(true);
+                refreshStepStatus();
                 serverOpen = done;
                 refreshActionButtons();
                 setDot(done);
@@ -1522,11 +1522,6 @@ public class MainActivity extends AppCompatActivity {
      *  si esta caido lo arranca solo; espera HTTP hasta 60s con cuenta atras;
      *  sin respuesta deja panel + reintento. */
     private void enterChatBlocking() {
-        // Sin asistente completo no se entra: rebota al paso a paso.
-        if (!wizardDone()) {
-            showWizardDialog();
-            return;
-        }
         enterChatLocked(this::enterChatBlockingCore);
     }
 
@@ -1538,6 +1533,16 @@ public class MainActivity extends AppCompatActivity {
             if (!isPortOpen()) {
                 runOnUiThread(() -> {
                     if (gen != openGen) return;
+                    if (!btnStart.isEnabled()) {
+                        // Boton oscurecido = pasos a medias: no se arranca a
+                        // ciegas, la tira de puntos dice que falta.
+                        txtStatus.setText(T("Faltan pasos: completa los puntos",
+                                "Steps missing: complete the dots"));
+                        log("Abrir chat: aun faltan pasos del primer arranque."
+                                + " Completa la lista de puntos y pulsa Iniciar.");
+                        setBusy(false);
+                        return;
+                    }
                     txtStatus.setText(T("Servidor parado: arrancando…", "Server stopped: starting…"));
                     log("Abrir chat con servidor parado: arranco solo.");
                     btnStart.performClick();
@@ -1597,6 +1602,9 @@ public class MainActivity extends AppCompatActivity {
         boolean onb = isOnboarded();
         View guide = findViewById(R.id.cardGuide);
         if (guide != null) guide.setVisibility(onb ? View.GONE : View.VISIBLE);
+        // Tira de estados de los 5 pasos: solo mientras no este todo hecho.
+        View strip = findViewById(R.id.stepStatus);
+        if (strip != null) strip.setVisibility(onb ? View.GONE : View.VISIBLE);
         // Botones sueltos antiguos: la guia los sustituye (quedan ocultos siempre).
         findViewById(R.id.lblSteps).setVisibility(View.GONE);
         findViewById(R.id.btnTermux).setVisibility(View.GONE);
@@ -1656,16 +1664,29 @@ public class MainActivity extends AppCompatActivity {
             title.setText(T("PASO 2 de 3 · Preparar Termux", "STEP 2 of 3 · Set up Termux"));
             desc.setText(T("Abre Termux una vez primero (su instalacion inicial)."
                     + " Un toque lo instala todo, lo veras correr."
-                    + "\n\nVa a pasar:\n1. Te pedira 3 permisos (comandos, mostrar encima y archivos)"
+                    + "\n\nVa a pasar:\n1. Te pedira los permisos que falten (comandos, mostrar encima, archivos y batería)"
                     + "\n2. Veras [1/3] [2/3] [3/3] en Termux\n3. Cierra Termux del todo, reabrelo y vuelve"
                     + "\nSi no te pide archivos: en Termux escribe termux-setup-storage y acepta.",
                     "Open Termux once first (its first-time setup)."
                     + " One tap installs everything, you will see it run."
-                    + "\n\nWhat happens:\n1. It will ask for 3 permissions (commands, display over apps and files)"
+                    + "\n\nWhat happens:\n1. It will ask for the missing permissions (commands, draw over apps, files and battery)"
                     + "\n2. You will see [1/3] [2/3] [3/3] in Termux\n3. Fully close Termux, reopen it and come back"
                     + "\nIf it does not ask for files: in Termux type termux-setup-storage and accept."));
-            go.setText(T("Instalar todo en Termux", "Install everything in Termux"));
+            final boolean tried = setupTried();
+            go.setText(tried ? T("Iniciar y abrir", "Start and open")
+                    : T("Instalar todo en Termux", "Install everything in Termux"));
             go.setOnClickListener(v -> {
+                if (tried) {
+                    // Setup ya lanzado: el paso 2 queda hecho; ahora toca arrancar.
+                    if (btnStart.isEnabled()) {
+                        startServerSequence();
+                    } else {
+                        refreshStepStatus();
+                        snack(T("Completa los puntos rojos y pulsa Iniciar",
+                                "Complete the red dots and press Start"));
+                    }
+                    return;
+                }
                 if (ContextCompat.checkSelfPermission(this, "com.termux.permission.RUN_COMMAND")
                         != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                     log("Falta el permiso de Android 'Run commands in Termux environment'."
@@ -1677,6 +1698,19 @@ public class MainActivity extends AppCompatActivity {
                     log("A Termux le falta 'mostrar sobre otras apps' (lo pide para sesiones visibles)."
                             + " Te abro su ajuste: activalo y vuelve.");
                     requestTermuxOverlay();
+                    return;
+                }
+                if (!hasAllFilesAccess()) {
+                    log("A esta app le falta 'todos los archivos' (lo necesita para"
+                            + " reparar la config de opencode). Te abro el ajuste: activalo y vuelve.");
+                    snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
+                    openAllFilesSettings();
+                    return;
+                }
+                if (!batteryExempt()) {
+                    log("Termux sin exencion de bateria (Android podria suspenderlo)."
+                            + " Te pido el ajuste: acepta y vuelve a pulsar.");
+                    requestBatteryExemption();
                     return;
                 }
                 setBusy(true);
@@ -1700,6 +1734,10 @@ public class MainActivity extends AppCompatActivity {
                         }
                     }
                     String r = TermuxRunner.runInTermux(this, SETUP_NOROOT, false, "Setup");
+                    if (!r.contains("sin permiso")) {
+                        getSharedPreferences("app", MODE_PRIVATE).edit()
+                                .putBoolean("setup_tried", true).apply();
+                    }
                     final String transcript = t + "$ setup automatico:\n" + r
                             + "\nMira Termux: veras [1/3] [2/3] [3/3].";
                     runOnUiThread(() -> {
@@ -1783,6 +1821,7 @@ public class MainActivity extends AppCompatActivity {
         android.widget.TextView l2 = findViewById(R.id.txtLog);
         if (l2 != null && !ls.isEmpty() && !ls.equals(es0) && !ls.equals(en0)) l2.setText(ls);
         refreshGuide();
+        refreshStepStatus();
         checkStatus(false);
     }
     /** Repinta todos los textos visibles de la app en el idioma actual. */
@@ -2464,17 +2503,22 @@ public class MainActivity extends AppCompatActivity {
         return r;
     }
 
-    /** Asistente de primer arranque: UN boton por paso, sin textos que leer.
-     *  Mientras no este completo, Iniciar/Abrir rebotan aqui (la gente no lee
-     *  la guia y va directa al boton grande). Todo se detecta solo al volver. */
-    private androidx.appcompat.app.AlertDialog wizDlg;
-
+    /** Pasos del primer arranque: el boton grande va oscurecido hasta que los
+     *  5 esten en verde; debajo se ve su estado (punto rojo/verde, sin botones).
+     *  Todo se detecta solo al volver de Ajustes/Termux (refreshStepStatus). */
     private boolean wizardDone() {
         return getSharedPreferences("app", MODE_PRIVATE).getBoolean("wizard_done", false);
     }
 
     private boolean setupOk() {
         return getSharedPreferences("app", MODE_PRIVATE).getBoolean("setup_ok", false);
+    }
+
+    /** El comando de setup quedo pegado/lanzado (la prueba fina es el primer
+     *  arranque con exito). Sin esto, tras pegar el setup el boton seguiria
+     *  oscurecido esperando una prueba que aun no se puede pedir. */
+    private boolean setupTried() {
+        return getSharedPreferences("app", MODE_PRIVATE).getBoolean("setup_tried", false);
     }
 
     private void markWizardDone() {
@@ -2485,13 +2529,7 @@ public class MainActivity extends AppCompatActivity {
         // La tarjeta (PASO x de 3) se esconde por onboarding_done: sin esto,
         // entrar al chat con el servidor ya abierto la dejaba visible para siempre.
         applyOnboarding();
-        if (wizDlg != null) {
-            try {
-                wizDlg.dismiss();
-            } catch (Exception ignored) {
-            }
-            wizDlg = null;
-        }
+        refreshStepStatus();
     }
 
     private boolean batteryExempt() {
@@ -2513,96 +2551,52 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void wizRow(android.widget.LinearLayout root, String step, String state,
-            String btnText, Runnable action) {
-        TextView t = new TextView(this);
-        t.setText((state.isEmpty() ? "" : state + " ") + step);
-        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        t.setTextSize(16);
-        root.addView(t);
-        if (action != null) {
-            com.google.android.material.button.MaterialButton b =
-                    new com.google.android.material.button.MaterialButton(this);
-            b.setText(btnText);
-            b.setOnClickListener(v -> action.run());
-            root.addView(b);
+    /** Recalcula los 5 pasos del primer arranque: repinta la tira de puntos
+     *  (rojo = falta, verde = hecho) y el oscurecido del boton grande. */
+    private volatile boolean stepsGreen = false;
+
+    private void refreshStepStatus() {
+        if (wizardDone() || isOnboarded()) {
+            stepsGreen = true;
+            runOnUiThread(this::applyStepStatus);
+            return;
         }
-        View s = new View(this);
-        s.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(10)));
-        root.addView(s);
+        new Thread(() -> {
+            boolean hasTermux = TermuxRunner.isTermuxInstalled(this);
+            boolean setup = setupOk() || setupTried();
+            boolean ov = TermuxRunner.isOverlayGranted(this);
+            boolean files = hasAllFilesAccess();
+            boolean bat = batteryExempt();
+            stepsGreen = hasTermux && setup && ov && files && bat;
+            runOnUiThread(() -> applyStepStatus(hasTermux, setup, ov, files, bat));
+        }).start();
     }
 
-    private void showWizardDialog() {
-        if (isFinishing() || fullscreen) return;
-        if (wizDlg != null) {
-            try {
-                wizDlg.dismiss();
-            } catch (Exception ignored) {
-            }
-        }
-        boolean hasTermux = TermuxRunner.isTermuxInstalled(this);
-        boolean setup = setupOk();
-        boolean ov = TermuxRunner.isOverlayGranted(this);
-        boolean files = hasAllFilesAccess();
-        boolean bat = batteryExempt();
-        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
-        root.setOrientation(android.widget.LinearLayout.VERTICAL);
-        int p = dp(16);
-        root.setPadding(p, p, p, p);
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-        scroll.addView(root);
-        wizRow(root, T("1 · Termux instalado", "1 · Termux installed"),
-                hasTermux ? "✓" : "○",
-                hasTermux ? null : T("Descargar Termux", "Download Termux"),
-                hasTermux ? null : this::showTermuxDownloadGuide);
-        wizRow(root, T("2 · Setup en Termux (pegar 1 comando y esperar)",
-                        "2 · Setup in Termux (paste 1 command and wait)"),
-                setup ? "✓" : "○",
-                setup ? null : T("Copiar comando y abrir Termux", "Copy command and open Termux"),
-                setup ? null : this::copySetupAndOpenTermux);
-        if (!setup) {
-            wizRow(root, T("Ya lo pegué en Termux", "I already pasted it in Termux"), "",
-                    T("Arrancar y comprobar", "Start and check"), () -> {
-                        if (wizDlg != null) {
-                            try {
-                                wizDlg.dismiss();
-                            } catch (Exception ignored) {
-                            }
-                            wizDlg = null;
-                        }
-                        startServerSequence();
-                    });
-        }
-        wizRow(root, T("3a · Termux puede mostrarse encima", "3a · Termux can draw over apps"),
-                ov ? "✓" : "○",
-                ov ? null : T("Activar", "Enable"),
-                ov ? null : this::requestTermuxOverlay);
-        wizRow(root, T("3b · Archivos de la app", "3b · App files"),
-                files ? "✓" : "○",
-                files ? null : T("Activar", "Enable"),
-                files ? null : this::openAllFilesSettings);
-        wizRow(root, T("3c · Batería sin restricciones (Termux)", "3c · Unrestricted battery (Termux)"),
-                bat ? "✓" : "○",
-                bat ? null : T("Activar", "Enable"),
-                bat ? null : this::requestBatteryExemption);
-        boolean allGreen = hasTermux && setup && ov && files && bat;
-        com.google.android.material.button.MaterialButton go =
-                new com.google.android.material.button.MaterialButton(this);
-        go.setText(allGreen
-                ? T("Iniciar y abrir", "Start and open")
-                : T("Faltan pasos ↑", "Steps missing ↑"));
-        go.setEnabled(allGreen);
-        go.setOnClickListener(v -> {
-            markWizardDone();
-            startServerSequence();
-        });
-        root.addView(go);
-        wizDlg = new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-                .setTitle(T("Primer arranque", "First start"))
-                .setView(scroll)
-                .setCancelable(true)
-                .show();
+    /** Sin wizard completado el boton no se enciende hasta tener los 5 en verde. */
+    private void applyStepStatus() {
+        btnStart.setEnabled(stepsGreen || wizardDone());
+    }
+
+    private void applyStepStatus(boolean hasTermux, boolean setup, boolean ov,
+            boolean files, boolean bat) {
+        applyStepStatus();
+        updateStepRow(R.id.stepRow1, hasTermux,
+                T("1 · Termux instalado", "1 · Termux installed"));
+        updateStepRow(R.id.stepRow2, setup,
+                T("2 · Setup en Termux", "2 · Setup in Termux"));
+        updateStepRow(R.id.stepRow3, ov,
+                T("3a · Termux puede mostrarse encima", "3a · Termux can draw over apps"));
+        updateStepRow(R.id.stepRow4, files, T("3b · Archivos de la app", "3b · App files"));
+        updateStepRow(R.id.stepRow5, bat,
+                T("3c · Batería sin restricciones", "3c · Unrestricted battery"));
+    }
+
+    /** Punto rojo (falta) / verde (hecho). Solo estado: sin botones. */
+    private void updateStepRow(int id, boolean ok, String label) {
+        TextView row = findViewById(id);
+        if (row == null) return;
+        row.setText("● " + label);
+        row.setTextColor(ok ? 0xFF1E8E3E : 0xFFC62828);
     }
 
     /** Consumo de cuota: lee las sesiones de la API local (no depende del widget
@@ -3004,8 +2998,9 @@ public class MainActivity extends AppCompatActivity {
                 req.setMimeType("application/vnd.android.package-archive");
                 req.setNotificationVisibility(
                         android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
-                        "opencode-android/" + name);
+                java.io.File stale = new java.io.File(getExternalFilesDir("updates"), name);
+                if (stale.exists()) stale.delete();
+                req.setDestinationInExternalFilesDir(this, "updates", name);
                 long id = dm.enqueue(req);
                 appDownloadId = id;
                 getSharedPreferences("app", MODE_PRIVATE).edit()
@@ -3016,7 +3011,21 @@ public class MainActivity extends AppCompatActivity {
                         public void onReceive(Context ctx, Intent intent) {
                             long rid = intent.getLongExtra(
                                     android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                            if (rid == appDownloadId) installAppUpdate();
+                            if (rid != appDownloadId) return;
+                            // Tambien salta si fallo: instalar solo si acabo bien.
+                            try (android.database.Cursor c = dm.query(
+                                    new android.app.DownloadManager.Query().setFilterById(rid))) {
+                                if (c != null && c.moveToFirst()
+                                        && c.getInt(c.getColumnIndex(
+                                                android.app.DownloadManager.COLUMN_STATUS))
+                                                == android.app.DownloadManager.STATUS_SUCCESSFUL) {
+                                    installAppUpdate();
+                                } else {
+                                    log("Descarga de la app incompleta o fallida. Reintenta.");
+                                    snack(T("Fallo la descarga, reintenta",
+                                            "Download failed, retry"));
+                                }
+                            }
                         }
                     };
                     ContextCompat.registerReceiver(this, appDownloadReceiver,
@@ -3060,9 +3069,7 @@ public class MainActivity extends AppCompatActivity {
     private void installAppUpdate() {
         try {
             String name = getSharedPreferences("app", MODE_PRIVATE).getString("app_apk", "");
-            java.io.File apk = new java.io.File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "opencode-android/" + name);
+            java.io.File apk = new java.io.File(getExternalFilesDir("updates"), name);
             Uri uri = androidx.core.content.FileProvider.getUriForFile(
                     this, getPackageName() + ".fileprovider", apk);
             Intent in = new Intent(Intent.ACTION_VIEW);

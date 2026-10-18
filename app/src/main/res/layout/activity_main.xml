@@ -159,6 +159,64 @@
             android:text="Iniciar y abrir"
             app:icon="@android:drawable/ic_media_play" />
 
+        <LinearLayout
+            android:id="@+id/stepStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/stepRow1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:text="● 1 · Termux instalado"
+                android:textColor="#C62828"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/stepRow2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:text="● 2 · Setup en Termux"
+                android:textColor="#C62828"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/stepRow3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:text="● 3a · Termux puede mostrarse encima"
+                android:textColor="#C62828"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/stepRow4"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:text="● 3b · Archivos de la app"
+                android:textColor="#C62828"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/stepRow5"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:text="● 3c · Batería sin restricciones"
+                android:textColor="#C62828"
+                android:textSize="15sp" />
+        </LinearLayout>
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnOpen"
             android:layout_width="match_parent"
