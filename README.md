@@ -35,6 +35,8 @@ Android launcher for [opencode](https://github.com/anomalyco/opencode) running o
 
 > [!TIP]
 > **First time installing? Watch the video tutorial first.** It walks through Termux, permissions and the wizard, step by step.
+>
+> **This setup is done only once.** After that, just open the app and tap **Start and open**.
 
 ### Video tutorial
 
