@@ -2973,21 +2973,16 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** Chequeo del launcher: release con APK mas nuevo que esta version.
-     *  Cache 24h (la API de GitHub sin login admite ~60/h). */
+    /** Chequeo del launcher: pinta la cache al instante y refresca contra
+     *  GitHub en cada entrada (minimo 60 s entre intentos por la API). */
     private void checkLauncherUpdate(boolean verbose) {
         android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
-        long ts = p.getLong("appupd_ts", 0);
         String cTag = p.getString("appupd_tag", "");
         String cUrl = p.getString("appupd_url", "");
-        String curVer = UpdateCheck.appVersion(this);
-        boolean fresh = !cTag.isEmpty() && !curVer.isEmpty()
-                && curVer.equals(p.getString("appupd_ver", ""))
-                && System.currentTimeMillis() - ts < 24L * 3600 * 1000;
-        if (fresh && !verbose) {
-            applyLauncherCache(cTag, cUrl);
-            return;
-        }
+        if (!cTag.isEmpty() && !cUrl.isEmpty()) applyLauncherCache(cTag, cUrl);
+        long last = p.getLong("appupd_try", 0);
+        if (!verbose && System.currentTimeMillis() - last < 60_000) return;
+        p.edit().putLong("appupd_try", System.currentTimeMillis()).apply();
         new Thread(() -> {
             String[] rel = UpdateCheck.launcherRelease();
             if (rel == null) {
@@ -3021,7 +3016,16 @@ public class MainActivity extends AppCompatActivity {
         appUpdTag = appUpdatePending ? tag : "";
         appUpdUrl = appUpdatePending ? url : "";
         refreshAppUpdateBtn();
-        if (appUpdatePending) maybeNotifyApp(tag);
+        if (appUpdatePending) {
+            maybeNotifyApp(tag);
+        } else {
+            try {
+                android.app.NotificationManager nm = (android.app.NotificationManager)
+                        getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) nm.cancel(ServerWatch.NID_APP);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private void refreshAppUpdateBtn() {
