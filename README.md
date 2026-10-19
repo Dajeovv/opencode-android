@@ -31,7 +31,43 @@ Android launcher for [opencode](https://github.com/anomalyco/opencode) running o
 
 ## Installation
 
-Video tutorials: [Español](https://github.com/Dajeovv/opencode-android/releases/download/install-videos/install-es.mp4) · [English](https://github.com/Dajeovv/opencode-android/releases/download/install-videos/install-en.mp4)
+<details>
+<summary><b>Video tutorial — Español</b> (3 partes, calidad completa en la release)</summary>
+
+Parte 1/3
+
+https://github.com/user-attachments/assets/bab76268-42b4-4039-81fc-2e3e1e0ab68f
+
+Parte 2/3
+
+https://github.com/user-attachments/assets/f031866f-45fd-4493-bfd5-fe5abc8a8b55
+
+Parte 3/3
+
+https://github.com/user-attachments/assets/30d25b2b-4df4-4871-ac3d-e75c7ffaa7a7
+
+Full quality: [install-es.mp4](https://github.com/Dajeovv/opencode-android/releases/download/install-videos/install-es.mp4)
+
+</details>
+
+<details>
+<summary><b>Video tutorial — English</b> (3 parts, full quality in the release)</summary>
+
+Part 1/3
+
+https://github.com/user-attachments/assets/eebc8aed-2833-441e-b2a3-b4c7716df40a
+
+Part 2/3
+
+https://github.com/user-attachments/assets/1106b77f-78a7-4408-9c00-1528e2e1da4d
+
+Part 3/3
+
+https://github.com/user-attachments/assets/7def2639-9e16-4b57-95fd-ec8cfca79cdb
+
+Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/releases/download/install-videos/install-en.mp4)
+
+</details>
 
 1. Download the APK from the latest [Release](../../releases) and install it.
 2. Open the app and follow the wizard (it will ask for 2–3 permissions).
