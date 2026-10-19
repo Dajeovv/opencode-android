@@ -10,8 +10,8 @@ android {
         applicationId "com.opencode.launcher"
         minSdk 26
         targetSdk 34
-        versionCode 156
-        versionName "3.126"
+        versionCode 157
+        versionName "3.127"
     }
 
     // Firma release: lee keystore.properties (no versionado). Sin ese fichero,
