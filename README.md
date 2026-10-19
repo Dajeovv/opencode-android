@@ -6,6 +6,8 @@ Android launcher for [opencode](https://github.com/anomalyco/opencode) running o
 ![minSdk 26](https://img.shields.io/badge/minSdk-26-blue)
 ![targetSdk 34](https://img.shields.io/badge/targetSdk-34-blue)
 
+**[First time here? Jump to the 3-part video tutorial](#video-tutorial)** — Español / English.
+
 ## Screenshots
 
 | Launch | Panel |
