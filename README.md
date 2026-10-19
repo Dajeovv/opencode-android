@@ -33,8 +33,6 @@ Android launcher for [opencode](https://github.com/anomalyco/opencode) running o
 
 > [!TIP]
 > **First time installing? Watch the video tutorial first.** It walks through Termux, permissions and the wizard, step by step.
->
-> [Español — Part 1](https://github.com/user-attachments/assets/bab76268-42b4-4039-81fc-2e3e1e0ab68f) · [English — Part 1](https://github.com/user-attachments/assets/eebc8aed-2833-441e-b2a3-b4c7716df40a) — all three parts are below.
 
 ### Video tutorial
 
