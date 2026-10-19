@@ -138,6 +138,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean appForeground = false;
     private int agentNotifId = 100;
     private ActivityResultLauncher<String> notifPermLauncher;
+    private boolean notifPermTried = false;
     private ActivityResultLauncher<Intent> lockLauncher;
     /** Desbloqueo ya pasado en esta vida de la app (el bloqueo se pide una vez). */
     private boolean unlockedRun = false;
@@ -2216,6 +2217,13 @@ public class MainActivity extends AppCompatActivity {
         if (updatePending)
             menu.getMenu().add(0, 5, 5, T("Actualizar opencode ", "Update opencode ")
                     + updInstalled + " → " + updLatest).setIcon(android.R.drawable.ic_menu_upload);
+        if (appUpdatePending)
+            menu.getMenu().add(0, 10, 5, T("Nueva versión de la app ", "New app version ")
+                    + appUpdTag + T(" — Descargar", " — Download"))
+                    .setIcon(android.R.drawable.stat_sys_download);
+        else
+            menu.getMenu().add(0, 11, 5, T("Buscar actualización de la app", "Check app update"))
+                    .setIcon(android.R.drawable.ic_popup_sync);
         menu.getMenu().add(0, 6, 6, autoPerm()
                 ? T("Permisos auto: SÍ ✓", "Auto-approve: ON ✓")
                 : T("Permisos auto: NO", "Auto-approve: OFF")).setIcon(android.R.drawable.ic_menu_manage);
@@ -2242,6 +2250,14 @@ public class MainActivity extends AppCompatActivity {
             }
             if (id == 5) {
                 findViewById(R.id.btnUpdate).performClick();
+                return true;
+            }
+            if (id == 10) {
+                findViewById(R.id.btnAppUpdate).performClick();
+                return true;
+            }
+            if (id == 11) {
+                checkLauncherUpdate(true);
                 return true;
             }
             if (id == 6) {
@@ -2913,25 +2929,46 @@ public class MainActivity extends AppCompatActivity {
             if (!pending || latest == null || latest.isEmpty()) return;
             android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
             if (latest.equals(p.getString("upd_notified", ""))) return;
-            p.edit().putString("upd_notified", latest).apply();
-            ServerWatch.notifyId(this, ServerWatch.NID_OC,
+            if (ServerWatch.notifyId(this, ServerWatch.NID_OC,
                     T("Actualización de opencode", "opencode update"),
                     installed + " → " + latest + T(": abre la app para instalarla",
-                            ": open the app to install it"));
+                            ": open the app to install it"))) {
+                p.edit().putString("upd_notified", latest).apply();
+            } else {
+                askNotifPermission();
+            }
         } catch (Exception ignored) {
         }
     }
 
-    /** Notificacion de launcher nuevo (una vez por version). */
+    /** Notificacion de launcher nuevo (una vez por version; si el aviso no
+     *  llego a mostrarse no se marca y se reintenta en la proxima apertura). */
     private void maybeNotifyApp(String tag) {
         try {
             android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
             if (tag.equals(p.getString("appupd_notified", ""))) return;
-            p.edit().putString("appupd_notified", tag).apply();
-            ServerWatch.notifyId(this, ServerWatch.NID_APP,
+            if (ServerWatch.notifyId(this, ServerWatch.NID_APP,
                     T("Nueva versión de la app", "New app version"),
                     T("Disponible ", "Available ") + tag + T(": abre la app para descargarla",
-                            ": open the app to download it"));
+                            ": open the app to download it"))) {
+                p.edit().putString("appupd_notified", tag).apply();
+            } else {
+                askNotifPermission();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Pide POST_NOTIFICATIONS (una vez por sesion) si hace falta. */
+    private void askNotifPermission() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (ContextCompat.checkSelfPermission(this,
+                android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+        if (notifPermTried) return;
+        notifPermTried = true;
+        try {
+            notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS);
         } catch (Exception ignored) {
         }
     }
@@ -2943,7 +2980,9 @@ public class MainActivity extends AppCompatActivity {
         long ts = p.getLong("appupd_ts", 0);
         String cTag = p.getString("appupd_tag", "");
         String cUrl = p.getString("appupd_url", "");
-        boolean fresh = !cTag.isEmpty()
+        String curVer = UpdateCheck.appVersion(this);
+        boolean fresh = !cTag.isEmpty() && !curVer.isEmpty()
+                && curVer.equals(p.getString("appupd_ver", ""))
                 && System.currentTimeMillis() - ts < 24L * 3600 * 1000;
         if (fresh && !verbose) {
             applyLauncherCache(cTag, cUrl);
@@ -2951,13 +2990,25 @@ public class MainActivity extends AppCompatActivity {
         }
         new Thread(() -> {
             String[] rel = UpdateCheck.launcherRelease();
-            String tag = rel != null ? rel[0] : null;
-            String url = rel != null ? rel[1] : null;
+            if (rel == null) {
+                runOnUiThread(() -> {
+                    if (verbose) snack(T("No se pudo comprobar la actualización",
+                            "Could not check for updates"));
+                });
+                return;
+            }
+            String tag = rel[0];
+            String url = rel[1];
             getSharedPreferences("app", MODE_PRIVATE).edit()
                     .putLong("appupd_ts", System.currentTimeMillis())
-                    .putString("appupd_tag", tag != null ? tag : "")
-                    .putString("appupd_url", url != null ? url : "").apply();
-            runOnUiThread(() -> applyLauncherCache(tag, url));
+                    .putString("appupd_tag", tag)
+                    .putString("appupd_url", url)
+                    .putString("appupd_ver", UpdateCheck.appVersion(this)).apply();
+            runOnUiThread(() -> {
+                applyLauncherCache(tag, url);
+                if (verbose && !appUpdatePending)
+                    snack(T("No hay actualizaciones", "No updates available"));
+            });
         }).start();
     }
 

@@ -10,7 +10,7 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context ctx, Intent intent) {
         if (intent == null || !Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
         ServerWatch.arm(ctx);
-        ServerWatch.armUpdateCheck(ctx);
+        ServerWatch.rearmUpdateCheck(ctx);
         if (!ServerWatch.bootOn(ctx)) return;
         final PendingResult pr = goAsync();
         new Thread(() -> {

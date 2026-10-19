@@ -10,9 +10,10 @@ public class UpdateCheckReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context ctx, Intent intent) {
         if (intent != null && Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
-            ServerWatch.armUpdateCheck(ctx);
+            ServerWatch.rearmUpdateCheck(ctx);
             return;
         }
+        ServerWatch.armUpdateCheck(ctx);
         final PendingResult pr = goAsync();
         new Thread(() -> {
             try {
@@ -23,12 +24,13 @@ public class UpdateCheckReceiver extends BroadcastReceiver {
                     if (latest != null && !installed.isEmpty()
                             && UpdateCheck.cmpVer(latest, installed) > 0
                             && !latest.equals(UpdateCheck.p(ctx).getString("upd_notified", ""))) {
-                        UpdateCheck.p(ctx).edit().putString("upd_notified", latest).apply();
-                        ServerWatch.notifyId(ctx, ServerWatch.NID_OC,
+                        if (ServerWatch.notifyId(ctx, ServerWatch.NID_OC,
                                 ServerWatch.t(ctx, "Actualización de opencode", "opencode update"),
                                 installed + " → " + latest + ServerWatch.t(ctx,
                                         ": abre la app para instalarla",
-                                        ": open the app to install it"));
+                                        ": open the app to install it"))) {
+                            UpdateCheck.p(ctx).edit().putString("upd_notified", latest).apply();
+                        }
                     }
                 } catch (Exception ignored) {
                 }
@@ -38,12 +40,13 @@ public class UpdateCheckReceiver extends BroadcastReceiver {
                     String cur = UpdateCheck.appVersion(ctx);
                     if (rel != null && !cur.isEmpty() && UpdateCheck.cmpVer(rel[0], cur) > 0
                             && !rel[0].equals(UpdateCheck.p(ctx).getString("appupd_notified", ""))) {
-                        UpdateCheck.p(ctx).edit().putString("appupd_notified", rel[0]).apply();
-                        ServerWatch.notifyId(ctx, ServerWatch.NID_APP,
+                        if (ServerWatch.notifyId(ctx, ServerWatch.NID_APP,
                                 ServerWatch.t(ctx, "Nueva versión de la app", "New app version"),
                                 ServerWatch.t(ctx, "Disponible ", "Available ") + rel[0]
                                         + ServerWatch.t(ctx, ": abre la app para descargarla",
-                                                ": open the app to download it"));
+                                                ": open the app to download it"))) {
+                            UpdateCheck.p(ctx).edit().putString("appupd_notified", rel[0]).apply();
+                        }
                     }
                 } catch (Exception ignored) {
                 }

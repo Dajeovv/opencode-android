@@ -155,38 +155,44 @@ public class ServerWatch {
         return PendingIntent.getBroadcast(ctx, UPD_REQ, i, fl);
     }
 
-    /** Alarma diaria de updates (inexacta, bateria). Idempotente;
-     *  no sobrevive a reiniciar (el arranque la rearma). */
+    /** Alarma diaria de updates (una sola vez; el receptor rearma la siguiente).
+     *  No se reprograma en cada apertura para que no se posponga sin fin. */
     public static void armUpdateCheck(Context ctx) {
         try {
+            SharedPreferences sp = p(ctx);
+            if (sp.getLong("appupd_alarm_at", 0) > System.currentTimeMillis()) return;
             AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
             if (am == null) return;
             PendingIntent pi = updIntent(ctx);
-            try {
-                am.cancel(pi);
-            } catch (Exception ignored) {
-            }
-            am.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    SystemClock.elapsedRealtime() + AlarmManager.INTERVAL_DAY,
-                    AlarmManager.INTERVAL_DAY, pi);
+            long next = System.currentTimeMillis() + AlarmManager.INTERVAL_DAY;
+            am.set(AlarmManager.RTC_WAKEUP, next, pi);
+            sp.edit().putLong("appupd_alarm_at", next).apply();
         } catch (Exception ignored) {
         }
     }
 
-    /** Aviso con id propio en el canal de actualizaciones. Respeta POST_NOTIFICATIONS. */
-    public static void notifyId(Context ctx, int nid, String title, String text) {
+    /** Tras reiniciar las alarmas se pierden aunque la marca siga en prefs. */
+    public static void rearmUpdateCheck(Context ctx) {
+        p(ctx).edit().remove("appupd_alarm_at").apply();
+        armUpdateCheck(ctx);
+    }
+
+    /** Aviso en el canal de actualizaciones. Devuelve true solo si se publico
+     *  (permiso concedido, avisos activos y canal no bloqueado). */
+    public static boolean notifyId(Context ctx, int nid, String title, String text) {
         try {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(ctx,
                     android.Manifest.permission.POST_NOTIFICATIONS)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) return false;
             NotificationManager nm =
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) return;
-            if (Build.VERSION.SDK_INT >= 26) {
-                NotificationChannel ch = new NotificationChannel(CH_UPD, "Actualizaciones",
-                        NotificationManager.IMPORTANCE_DEFAULT);
-                nm.createNotificationChannel(ch);
-            }
+            if (nm == null || !nm.areNotificationsEnabled()) return false;
+            NotificationChannel ch = new NotificationChannel(CH_UPD, "Actualizaciones",
+                    NotificationManager.IMPORTANCE_DEFAULT);
+            nm.createNotificationChannel(ch);
+            NotificationChannel cur = nm.getNotificationChannel(CH_UPD);
+            if (cur != null && cur.getImportance() == NotificationManager.IMPORTANCE_NONE)
+                return false;
             Intent open = new Intent(ctx, MainActivity.class);
             open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             int fl = PendingIntent.FLAG_UPDATE_CURRENT;
@@ -199,7 +205,9 @@ public class ServerWatch {
                     .setContentIntent(pi)
                     .setAutoCancel(true)
                     .build());
+            return true;
         } catch (Exception ignored) {
+            return false;
         }
     }
 
