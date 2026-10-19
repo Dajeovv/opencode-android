@@ -37,6 +37,12 @@ Run the build before submitting:
 4. Ensure the build passes and the diff is clean.
 5. Describe the *why* in the PR body, not just the *what*.
 
+## Publishing a version (maintainers)
+
+1. Bump `versionCode`/`versionName` in `app/build.gradle`.
+2. Build the APK, create a GitHub **Release** tagged `vX.Y` (e.g. `v3.119`) and attach the `.apk`. The app detects it on its own (it uses the first `.apk` asset).
+3. Do not mark non-version releases (e.g. video assets) as *Latest*: the in-app updater reads `releases/latest` and expects the `.apk`.
+
 ## Licensing of contributions
 
 Unless you state otherwise in writing, contributions intentionally submitted for

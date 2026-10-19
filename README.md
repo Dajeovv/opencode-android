@@ -94,11 +94,6 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 - Debug: `./gradlew :app:assembleDebug` (the first run downloads dependencies).
 - Signed release: `./gradlew :app:assembleRelease` (needs a `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; that file is never committed — keep a copy of the `.jks` and its passwords outside the repo).
 
-## Publishing a version
-
-1. Bump `versionCode`/`versionName` in `app/build.gradle`.
-2. Build the APK, create a GitHub **Release** tagged `vX.Y` (e.g. `v3.119`) and attach the `.apk`. The app detects it on its own (it uses the first `.apk` asset).
-
 ## Known limitations
 
 - On some phones the app freezer can pause long background downloads (see the watchdog interval).
