@@ -31,6 +31,8 @@ Android launcher for [opencode](https://github.com/anomalyco/opencode) running o
 
 ## Installation
 
+Video tutorials: [Español](https://github.com/Dajeovv/opencode-android/releases/download/install-videos/install-es.mp4) · [English](https://github.com/Dajeovv/opencode-android/releases/download/install-videos/install-en.mp4)
+
 1. Download the APK from the latest [Release](../../releases) and install it.
 2. Open the app and follow the wizard (it will ask for 2–3 permissions).
 3. Tap **Start and open**.
