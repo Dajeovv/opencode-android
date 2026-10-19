@@ -1456,7 +1456,7 @@ public class MainActivity extends AppCompatActivity {
     /** Chat-first: al abrir la app, si el servidor ya responde, directo al chat sin toques.
      *  Si esta caido, lo arranca solo y la secuencia abre el chat al acabar. */
     private void autoOpenIfRunning() {
-        setSplashStatus("Comprobando servidor...");
+        setSplashStatus(T("Comprobando servidor...", "Checking server..."));
         new Thread(() -> {
             if (waitForHttp(15000)) {
                 runOnUiThread(() -> {
@@ -1474,7 +1474,7 @@ public class MainActivity extends AppCompatActivity {
                     if (btnStart.isEnabled()) btnStart.performClick();
                 });
             } else {
-                setSplashStatus("Preparando controles...");
+                setSplashStatus(T("Preparando controles...", "Preparing controls..."));
             }
         }).start();
     }
