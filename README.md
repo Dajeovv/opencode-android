@@ -1,6 +1,6 @@
 # OpenCode Android
 
-Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real coding agent running on your Android phone. It can inspect and edit files, run commands and work on your projects — no PC required.
+Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real coding agent running on your Android phone. It can inspect and edit files, run commands, and — with wireless ADB — control apps and the UI, all without a PC.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![minSdk 26](https://img.shields.io/badge/minSdk-26-blue)
@@ -19,6 +19,7 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 ## Features
 
 - **One-tap chat**: starts `opencode serve` in Termux and opens the local UI (`http://127.0.0.1:4096`).
+- **Device control over wireless ADB (optional)**: with Android 11+ wireless debugging paired inside Termux and `android-tools` installed, opencode can launch apps, tap, type, read the UI and take screenshots — no PC (OEM support varies).
 - **First-run wizard**: guides you with or without root (installs Termux, configures permissions, installs opencode).
 - **Background opencode updates**: downloads with real MB progress, no frozen screen; auto-restarts when done.
 - **Update notifications**: panel button + system notification (even with the app closed, daily check), for new opencode releases and for new versions of this app.
