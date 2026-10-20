@@ -7,32 +7,42 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
+import android.database.Cursor;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
-import android.webkit.ValueCallback;
-import android.webkit.WebChromeClient;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
-import android.webkit.JavascriptInterface;
-import android.os.Bundle;
+import android.text.InputType;
+import android.util.Log;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
+import android.webkit.JavascriptInterface;
+import android.webkit.MimeTypeMap;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.webkit.WebResourceError;
-import android.webkit.WebResourceRequest;
-import android.util.Log;
-import android.util.TypedValue;
-import org.json.JSONObject;
+import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
@@ -43,17 +53,29 @@ import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
+import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.color.MaterialColors;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.google.android.material.snackbar.Snackbar;
 
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URL;
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
     /** Repo donde caen los reportes (issues): el proyecto propio. */
@@ -63,6 +85,9 @@ public class MainActivity extends AppCompatActivity {
     private static final int PORT = 4096;
     private static final String URL = "http://" + HOST + ":" + PORT;
     private static final String MANUAL_CMD = "opencode serve --hostname 127.0.0.1 --port 4096";
+    private static final long MAX_SHARE_BYTES = 50L * 1024 * 1024;
+    private static final long MAX_SHARE_TOTAL_BYTES = 100L * 1024 * 1024;
+    private static final int MAX_SHARE_FILES = 10;
     private static final String SETUP_BLOCK =
             ": oc-setup; echo '[1/3] Permiso externo...'; echo \"HOME=$HOME\"; mkdir -p ~/.termux ~/.opencode-android;"
             + " grep -qi '^allow-external-apps *= *true' ~/.termux/termux.properties 2>/dev/null"
@@ -123,8 +148,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean advancedOpen = false;
     private boolean serverOpen = false;
     /** Modo sin root: true hasta que la comprobacion de arranque diga lo contrario. */
-    private boolean hasRoot = true;
-    private boolean rootChecked = false;
+    private volatile boolean hasRoot = true;
+    private volatile boolean rootChecked = false;
     /** Descarga del APK de Termux (paso 1 sin root). */
     private long termuxDownloadId = -1;
     private BroadcastReceiver termuxDownloadReceiver = null;
@@ -137,6 +162,23 @@ public class MainActivity extends AppCompatActivity {
     /** Avisos del agente: solo suenan si NO miras el chat. */
     private boolean appForeground = false;
     private int agentNotifId = 100;
+    private PendingShare pendingShare;
+    private BottomSheetDialog shareDialog;
+    private BottomSheetDialog shareSessionPicker;
+    private boolean shareOpening = false;
+    private boolean shareFlowActive = false;
+    private final Object shareServerLock = new Object();
+    private volatile boolean shareServerStarting = false;
+    private volatile boolean shareServerStartFailed = false;
+    private volatile String shareTargetSessionId;
+    private String shareTargetSessionTitle;
+    private TextView shareSessionNameView;
+    private TextView shareSessionSubView;
+    private EditText shareInstructionView;
+    private MaterialButton shareSendButton;
+    private final List<ShareSession> shareSessions = new ArrayList<>();
+    private boolean shareSessionsLoading = false;
+    private volatile int shareSessionsGeneration = 0;
     private ActivityResultLauncher<String> notifPermLauncher;
     private boolean notifPermTried = false;
     private ActivityResultLauncher<Intent> lockLauncher;
@@ -285,7 +327,12 @@ public class MainActivity extends AppCompatActivity {
             return false;
         });
 
-        autoOpenIfRunning();
+        pendingShare = parseShareIntent(getIntent());
+        if (pendingShare == null) {
+            autoOpenIfRunning();
+        } else {
+            new Handler(Looper.getMainLooper()).postDelayed(this::showShareDialog, 700);
+        }
 
         applyOnboarding();
         applyLang();
@@ -699,6 +746,17 @@ public class MainActivity extends AppCompatActivity {
                     .getString("termux_apk", termuxApkName);
             log("Hay una descarga de Termux pendiente, retomando...");
             watchTermuxDownload(pendingDl);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        PendingShare share = parseShareIntent(intent);
+        if (share != null) {
+            pendingShare = share;
+            showShareDialog();
         }
     }
 
@@ -1162,18 +1220,20 @@ public class MainActivity extends AppCompatActivity {
                 }
                 snack(done ? T("Servidor abierto", "Server open") : T("No arranco: mira el registro", "Did not start: check the log"));
                 if (done) {
-                    if (httpOkF) {
-                        enterChatLocked(() -> {
-                            web.loadUrl(URL);
-                            setFullscreen(true);
-                        });
-                        new Thread(() -> {
-                            String w = TermuxRunner.wakeViaService(this, true);
-                            String first = w.split("\n")[0];
-                            runOnUiThread(() -> log("wake-lock: " + first + " (requiere app Termux:API)"));
-                        }).start();
-                    } else {
-                        snack(T("Servidor aun arrancando, pulsa Abrir chat en unos segundos", "Server still starting, press Open chat in a few seconds"));
+                    if (!shareBlocksAutoOpen()) {
+                        if (httpOkF) {
+                            enterChatLocked(() -> {
+                                web.loadUrl(URL);
+                                setFullscreen(true);
+                            });
+                            new Thread(() -> {
+                                String w = TermuxRunner.wakeViaService(this, true);
+                                String first = w.split("\n")[0];
+                                runOnUiThread(() -> log("wake-lock: " + first + " (requiere app Termux:API)"));
+                            }).start();
+                        } else {
+                            snack(T("Servidor aun arrancando, pulsa Abrir chat en unos segundos", "Server still starting, press Open chat in a few seconds"));
+                        }
                     }
                 }
             });
@@ -1280,23 +1340,725 @@ public class MainActivity extends AppCompatActivity {
                 }
                 snack(done ? T("Servidor abierto", "Server open") : T("No arranco: mira el registro", "Did not start: check the log"));
                 if (done) {
-                    if (httpOkF) {
-                        enterChatLocked(() -> {
-                            web.loadUrl(URL);
-                            setFullscreen(true);
-                        });
-                        new Thread(() -> {
-                            String w = useRoot() ? RootUtil.fireTermuxCmd(RootUtil.WAKE_ON)
-                                    : TermuxRunner.wakeViaService(this, true);
-                            String first = w.split("\n")[0];
-                            runOnUiThread(() -> log("wake-lock: " + first + " (requiere app Termux:API)"));
-                        }).start();
-                    } else {
-                        snack(T("Servidor aun arrancando, pulsa Abrir UI en unos segundos", "Server still starting, press Open UI in a few seconds"));
+                    if (!shareBlocksAutoOpen()) {
+                        if (httpOkF) {
+                            enterChatLocked(() -> {
+                                web.loadUrl(URL);
+                                setFullscreen(true);
+                            });
+                            new Thread(() -> {
+                                String w = useRoot() ? RootUtil.fireTermuxCmd(RootUtil.WAKE_ON)
+                                        : TermuxRunner.wakeViaService(this, true);
+                                String first = w.split("\n")[0];
+                                runOnUiThread(() -> log("wake-lock: " + first + " (requiere app Termux:API)"));
+                            }).start();
+                        } else {
+                            snack(T("Servidor aun arrancando, pulsa Abrir UI en unos segundos", "Server still starting, press Open UI in a few seconds"));
+                        }
                     }
                 }
             });
         }).start();
+    }
+
+    private PendingShare parseShareIntent(Intent intent) {
+        if (intent == null) return null;
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return null;
+        PendingShare share = new PendingShare();
+        CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        if (text != null) share.text = text.toString();
+        String subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+        if (subject != null) share.subject = subject;
+        if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            ArrayList<Uri> streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (streams != null) {
+                for (Uri uri : streams) addShareUri(share, uri);
+            }
+        } else {
+            Object stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (stream instanceof Uri) addShareUri(share, (Uri) stream);
+        }
+        ClipData clip = intent.getClipData();
+        if (clip != null) {
+            for (int i = 0; i < clip.getItemCount(); i++) addShareUri(share, clip.getItemAt(i).getUri());
+        }
+        clearShareIntent(intent);
+        if ((share.text == null || share.text.trim().isEmpty()) && share.uris.isEmpty()) return null;
+        return share;
+    }
+
+    private void clearShareIntent(Intent intent) {
+        intent.removeExtra(Intent.EXTRA_TEXT);
+        intent.removeExtra(Intent.EXTRA_STREAM);
+        intent.setClipData(null);
+    }
+
+    private void addShareUri(PendingShare share, Uri uri) {
+        if (uri == null || share.uris.size() >= MAX_SHARE_FILES) return;
+        String key = uri.toString();
+        for (Uri existing : share.uris) {
+            if (existing.toString().equals(key)) return;
+        }
+        share.uris.add(uri);
+    }
+
+    private void showShareDialog() {
+        PendingShare share = pendingShare;
+        if (share == null) return;
+        hideSplash();
+        if (shareDialog != null && shareDialog.isShowing()) shareDialog.dismiss();
+        shareFlowActive = true;
+        shareTargetSessionId = null;
+        shareTargetSessionTitle = null;
+        shareSessions.clear();
+        shareSessionsLoading = true;
+        shareSessionsGeneration++;
+        final int generation = shareSessionsGeneration;
+
+        View content = getLayoutInflater().inflate(R.layout.share_sheet, null);
+        ((TextView) content.findViewById(R.id.shareTitle))
+                .setText(T("Compartir con opencode", "Share with opencode"));
+        ((TextView) content.findViewById(R.id.shareSubtitle))
+                .setText(T("Elige dónde enviarlo", "Choose where to send it"));
+        ((TextView) content.findViewById(R.id.shareSessionLabel))
+                .setText(T("Enviar a", "Send to"));
+        ((TextView) content.findViewById(R.id.sharePreview))
+                .setText(sharePreview(share));
+        shareSessionNameView = content.findViewById(R.id.shareSessionName);
+        shareSessionSubView = content.findViewById(R.id.shareSessionSub);
+        shareSessionNameView.setText(T("Cargando sesiones…", "Loading sessions…"));
+        shareSessionSubView.setText(T("Comprobando servidor", "Checking server"));
+        shareInstructionView = content.findViewById(R.id.shareInstruction);
+        shareInstructionView.setHint(T("Instrucción opcional", "Optional instruction"));
+        shareSendButton = content.findViewById(R.id.shareSend);
+        shareSendButton.setText(T("Enviar", "Send"));
+        ((MaterialButton) content.findViewById(R.id.shareCancel))
+                .setText(T("Cancelar", "Cancel"));
+        ((TextView) content.findViewById(R.id.shareFootnote))
+                .setText(T("Los archivos se copian a Descargas/opencode-shares",
+                        "Files are copied to Downloads/opencode-shares"));
+
+        content.findViewById(R.id.shareSessionRow)
+                .setOnClickListener(v -> showShareSessionPicker());
+        shareSendButton.setOnClickListener(v -> {
+            String instruction = shareInstructionView.getText().toString();
+            String target = shareTargetSessionId;
+            pendingShare = null;
+            shareFlowActive = false;
+            BottomSheetDialog dialog = shareDialog;
+            if (dialog != null) dialog.dismiss();
+            startShareSend(share, instruction, target);
+        });
+        ((MaterialButton) content.findViewById(R.id.shareCancel)).setOnClickListener(v -> {
+            pendingShare = null;
+            shareFlowActive = false;
+            if (shareDialog != null) shareDialog.dismiss();
+        });
+
+        final BottomSheetDialog dialog = new BottomSheetDialog(this);
+        shareDialog = dialog;
+        dialog.setContentView(content);
+        styleShareSheet(dialog);
+        dialog.setOnDismissListener(d -> {
+            if (shareDialog != dialog) return;
+            shareSessionsGeneration++;
+            shareFlowActive = false;
+            pendingShare = null;
+            shareDialog = null;
+        });
+        dialog.show();
+        loadShareSessions(generation);
+    }
+
+    private void styleShareSheet(BottomSheetDialog dialog) {
+        dialog.setOnShowListener(d -> {
+            View sheet = dialog.findViewById(com.google.android.material.R.id.design_bottom_sheet);
+            if (sheet == null) return;
+            sheet.setBackgroundColor(Color.TRANSPARENT);
+            ViewGroup.LayoutParams lp = sheet.getLayoutParams();
+            lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+            sheet.setLayoutParams(lp);
+        });
+    }
+
+    private void showShareSessionPicker() {
+        if (shareDialog == null || !shareDialog.isShowing()) return;
+        if (shareSessionPicker != null && shareSessionPicker.isShowing()) return;
+        View content = getLayoutInflater().inflate(R.layout.share_session_picker, null);
+        ((TextView) content.findViewById(R.id.sharePickerTitle))
+                .setText(T("Enviar a", "Send to"));
+        ((TextView) content.findViewById(R.id.sharePickerSub))
+                .setText(T("Elige una conversación nueva o existente",
+                        "Choose a new or existing conversation"));
+        LinearLayout list = content.findViewById(R.id.sharePickerList);
+        addShareSessionOption(list, null,
+                T("Nueva sesión", "New session"),
+                T("Crear una conversación nueva", "Create a new conversation"));
+        if (shareSessionsLoading) {
+            addShareSessionInfo(list, T("Cargando sesiones…", "Loading sessions…"));
+        } else if (shareSessions.isEmpty()) {
+            addShareSessionInfo(list, T("No hay sesiones todavía", "No sessions yet"));
+        } else {
+            for (ShareSession session : shareSessions) {
+                String title = session.title == null || session.title.trim().isEmpty()
+                        ? T("Sesión sin título", "Untitled session") : session.title.trim();
+                addShareSessionOption(list, session.id, title,
+                        T("Sesión existente", "Existing session")
+                                + (session.updated > 0
+                                ? " · " + shareRelativeTime(session.updated) : ""));
+            }
+        }
+        MaterialButton cancel = content.findViewById(R.id.sharePickerCancel);
+        cancel.setText(T("Cancelar", "Cancel"));
+        final BottomSheetDialog picker = new BottomSheetDialog(this);
+        picker.setContentView(content);
+        styleShareSheet(picker);
+        picker.setOnDismissListener(d -> {
+            if (shareSessionPicker == picker) shareSessionPicker = null;
+        });
+        cancel.setOnClickListener(v -> picker.dismiss());
+        shareSessionPicker = picker;
+        picker.show();
+    }
+
+    private void addShareSessionInfo(LinearLayout list, String text) {
+        TextView info = new TextView(this);
+        info.setText(text);
+        info.setTextSize(13);
+        info.setTextColor(MaterialColors.getColor(this,
+                com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFF9E9E9E));
+        info.setPadding(dp(4), dp(12), dp(4), dp(12));
+        list.addView(info, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void addShareSessionOption(LinearLayout list, String id, String title,
+            String subtitle) {
+        boolean selected = id == null
+                ? shareTargetSessionId == null
+                : id.equals(shareTargetSessionId);
+        int surface = MaterialColors.getColor(this,
+                com.google.android.material.R.attr.colorSurfaceVariant, 0xFF1B1820);
+        int outline = MaterialColors.getColor(this,
+                com.google.android.material.R.attr.colorOutlineVariant, 0xFF49454F);
+        int primary = MaterialColors.getColor(this,
+                com.google.android.material.R.attr.colorPrimary, 0xFFD0BCFF);
+        int onSurface = MaterialColors.getColor(this,
+                com.google.android.material.R.attr.colorOnSurface, 0xFFE6E1E5);
+        int onSurfaceVariant = MaterialColors.getColor(this,
+                com.google.android.material.R.attr.colorOnSurfaceVariant, 0xFFCAC4D0);
+
+        MaterialCardView card = new MaterialCardView(this);
+        card.setCardBackgroundColor(surface);
+        card.setRadius(dp(16));
+        card.setCardElevation(0);
+        card.setStrokeColor(selected ? primary : outline);
+        card.setStrokeWidth(dp(selected ? 2 : 1));
+        card.setClickable(true);
+        card.setFocusable(true);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+        ImageView icon = new ImageView(this);
+        icon.setBackgroundResource(R.drawable.bg_share_icon);
+        icon.setImageResource(id == null ? R.drawable.ic_add : R.drawable.ic_chat);
+        icon.setColorFilter(primary);
+        icon.setPadding(dp(7), dp(7), dp(7), dp(7));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(32), dp(32)));
+
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setPadding(dp(10), 0, dp(8), 0);
+        TextView name = new TextView(this);
+        name.setText(title);
+        name.setTextSize(14.5f);
+        name.setTextColor(onSurface);
+        name.setMaxLines(1);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        texts.addView(name);
+        TextView sub = new TextView(this);
+        sub.setText(subtitle);
+        sub.setTextSize(12);
+        sub.setTextColor(onSurfaceVariant);
+        sub.setMaxLines(1);
+        sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        texts.addView(sub);
+        row.addView(texts, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        ImageView check = new ImageView(this);
+        check.setImageResource(R.drawable.ic_check);
+        check.setColorFilter(primary);
+        check.setVisibility(selected ? View.VISIBLE : View.INVISIBLE);
+        row.addView(check, new LinearLayout.LayoutParams(dp(22), dp(22)));
+
+        card.addView(row);
+        card.setOnClickListener(v -> {
+            shareTargetSessionId = id;
+            shareTargetSessionTitle = id == null ? null : title;
+            updateShareSessionRow();
+            if (shareSessionPicker != null) shareSessionPicker.dismiss();
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(8);
+        list.addView(card, lp);
+    }
+
+    private void updateShareSessionRow() {
+        if (shareSessionNameView == null || shareSessionSubView == null) return;
+        if (shareTargetSessionId == null) {
+            shareSessionNameView.setText(T("Nueva sesión", "New session"));
+            shareSessionSubView.setText(T("Se creará al enviar", "Created when you send"));
+        } else {
+            shareSessionNameView.setText(shareTargetSessionTitle == null
+                    ? T("Sesión seleccionada", "Selected session") : shareTargetSessionTitle);
+            shareSessionSubView.setText(T("Sesión existente", "Existing session"));
+        }
+    }
+
+    private void setShareSessionStatus(String name, String sub) {
+        runOnUiThread(() -> {
+            if (shareTargetSessionId != null) return;
+            if (shareSessionNameView == null || shareSessionSubView == null) return;
+            shareSessionNameView.setText(name);
+            shareSessionSubView.setText(sub);
+        });
+    }
+
+    private void loadShareSessions(int generation) {
+        new Thread(() -> {
+            boolean ready = ensureShareServerReady(90000);
+            if (generation != shareSessionsGeneration) return;
+            if (!ready) {
+                runOnUiThread(() -> {
+                    if (generation != shareSessionsGeneration) return;
+                    shareSessionsLoading = false;
+                    if (shareTargetSessionId == null) {
+                        shareSessionNameView.setText(T("Nueva sesión", "New session"));
+                        shareSessionSubView.setText(T("Servidor no disponible: se creará al enviar",
+                                "Server unavailable: will be created on send"));
+                    }
+                });
+                return;
+            }
+            try {
+                List<ShareSession> sessions = fetchShareSessions();
+                runOnUiThread(() -> {
+                    if (generation != shareSessionsGeneration) return;
+                    shareSessions.clear();
+                    shareSessions.addAll(sessions);
+                    shareSessionsLoading = false;
+                    if (shareTargetSessionId == null) {
+                        updateShareSessionRow();
+                    }
+                    if (shareSessionPicker != null && shareSessionPicker.isShowing()) {
+                        shareSessionPicker.dismiss();
+                        showShareSessionPicker();
+                    }
+                });
+            } catch (Exception e) {
+                String msg = e.getMessage() == null ? e.toString() : e.getMessage();
+                runOnUiThread(() -> {
+                    if (generation != shareSessionsGeneration) return;
+                    shareSessionsLoading = false;
+                    if (shareTargetSessionId == null) {
+                        shareSessionNameView.setText(T("Nueva sesión", "New session"));
+                        shareSessionSubView.setText(T("No se pudieron cargar las sesiones",
+                                "Could not load sessions"));
+                    }
+                    log(T("Share sesiones: ", "Share sessions: ") + msg);
+                });
+            }
+        }).start();
+    }
+
+    private boolean shareBlocksAutoOpen() {
+        return shareOpening || shareFlowActive || (shareDialog != null && shareDialog.isShowing());
+    }
+
+    private boolean ensureShareServerReady(long timeoutMs) {
+        if (waitForHttp(1500)) return true;
+        synchronized (shareServerLock) {
+            if (!shareServerStarting) {
+                if (!isPortOpen()) {
+                    shareServerStarting = true;
+                    shareServerStartFailed = false;
+                    for (int i = 0; i < 24 && !rootChecked; i++) {
+                        try {
+                            Thread.sleep(250);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            shareServerStarting = false;
+                            return false;
+                        }
+                    }
+                    runOnUiThread(() -> {
+                        if (btnStart != null && btnStart.isEnabled()) {
+                            setShareSessionStatus(T("Arrancando servidor…", "Starting server…"),
+                                    T("Puede tardar unos segundos", "This may take a few seconds"));
+                            startServerSequence();
+                        }
+                    });
+                }
+            }
+        }
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (waitForHttp(1000)) {
+                synchronized (shareServerLock) {
+                    shareServerStarting = false;
+                }
+                return true;
+            }
+            if (shareServerStartFailed) {
+                synchronized (shareServerLock) {
+                    shareServerStarting = false;
+                }
+                return false;
+            }
+        }
+        synchronized (shareServerLock) {
+            shareServerStarting = false;
+        }
+        return false;
+    }
+
+    private List<ShareSession> fetchShareSessions() throws Exception {
+        JSONArray array = new JSONArray(httpGetText("/session"));
+        List<ShareSession> sessions = new ArrayList<>();
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject obj = array.optJSONObject(i);
+            if (obj == null) continue;
+            if (obj.has("parentID") && !obj.isNull("parentID")
+                    && !obj.optString("parentID", "").isEmpty()) continue;
+            if (obj.has("parentId") && !obj.isNull("parentId")
+                    && !obj.optString("parentId", "").isEmpty()) continue;
+            String id = obj.optString("id", "");
+            if (id.isEmpty()) continue;
+            long updated = 0;
+            JSONObject time = obj.optJSONObject("time");
+            if (time != null) updated = time.optLong("updated", time.optLong("created", 0));
+            sessions.add(new ShareSession(id, obj.optString("title", ""), updated));
+        }
+        sessions.sort((a, b) -> {
+            int byTime = Long.compare(b.updated, a.updated);
+            return byTime != 0 ? byTime : a.title.compareToIgnoreCase(b.title);
+        });
+        if (sessions.size() > 20) return new ArrayList<>(sessions.subList(0, 20));
+        return sessions;
+    }
+
+    private String shareRelativeTime(long millis) {
+        long diff = System.currentTimeMillis() - millis;
+        if (diff < 0) diff = 0;
+        if (diff < 60_000L) return T("ahora", "now");
+        if (diff < 3_600_000L) return (diff / 60_000L) + T(" min", " min");
+        if (diff < 86_400_000L) return (diff / 3_600_000L) + T(" h", " h");
+        if (diff < 604_800_000L) return (diff / 86_400_000L) + T(" d", " d");
+        return android.text.format.DateFormat.getDateFormat(this)
+                .format(new java.util.Date(millis));
+    }
+
+    private String sharePreview(PendingShare share) {
+        StringBuilder sb = new StringBuilder();
+        if (share.subject != null && !share.subject.trim().isEmpty()) {
+            sb.append(share.subject.trim()).append("\n\n");
+        }
+        if (share.text != null && !share.text.trim().isEmpty()) {
+            String text = share.text.trim();
+            if (text.length() > 1200) text = text.substring(0, 1200) + "...";
+            sb.append(text);
+        }
+        if (!share.uris.isEmpty()) {
+            if (sb.length() > 0) sb.append("\n\n");
+            sb.append(T("Archivos: ", "Files: ")).append(share.uris.size());
+            for (int i = 0; i < share.uris.size() && i < 3; i++) {
+                sb.append("\n- ").append(displayName(share.uris.get(i)));
+            }
+            if (share.uris.size() > 3) sb.append("\n- ...");
+        }
+        return sb.toString();
+    }
+
+    private void startShareSend(PendingShare share, String instruction, String targetSessionId) {
+        pendingShare = null;
+        if (!share.uris.isEmpty() && !hasAllFilesAccess()) {
+            snack(T("Activa 'Todos los archivos' para compartir archivos",
+                    "Enable 'All files' to share files"));
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName())));
+            } catch (Exception e) {
+                log("Abre manual: Ajustes > Apps > OpenCode Android > Todos los archivos.");
+            }
+            return;
+        }
+        enterChatLocked(() -> {
+            shareOpening = true;
+            setBusy(true);
+            log(T("Compartido: preparando envio...", "Share: preparing..."));
+            new Thread(() -> {
+                try {
+                    List<File> files = copyShareFiles(share);
+                    if (!ensureShareServerReady(90000)) {
+                        throw new Exception(T("el servidor no arranco", "the server did not start"));
+                    }
+                    String sid = targetSessionId;
+                    if (sid == null || sid.isEmpty()) {
+                        sid = createShareSession(share);
+                    }
+                    final String sessionId = sid;
+                    String sessionUrl = shareSessionUrl(sessionId);
+                    String message = buildShareMessage(share, files, instruction);
+                    runOnUiThread(() -> {
+                        setBusy(false);
+                        setFullscreen(true);
+                        web.loadUrl(sessionUrl);
+                    });
+                    sendSharePrompt(sessionId, message);
+                    runOnUiThread(() -> snack(T("Compartido con opencode", "Shared with opencode")));
+                } catch (Exception e) {
+                    String msg = e.getMessage() == null ? e.toString() : e.getMessage();
+                    runOnUiThread(() -> {
+                        setBusy(false);
+                        log(T("Share fallo: ", "Share failed: ") + msg);
+                        snack(T("No se pudo compartir: ", "Could not share: ") + msg);
+                    });
+                } finally {
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> shareOpening = false, 8000);
+                }
+            }).start();
+        });
+    }
+
+    private List<File> copyShareFiles(PendingShare share) throws Exception {
+        List<File> out = new ArrayList<>();
+        if (share.uris.isEmpty()) return out;
+        File dir = new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS), "opencode-shares");
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new Exception(T("no pude crear la carpeta de archivos", "could not create the files folder"));
+        }
+        cleanupOldShares(dir);
+        long total = 0;
+        for (int index = 0; index < share.uris.size(); index++) {
+            Uri uri = share.uris.get(index);
+            File dest = new File(dir, sanitizeShareName(displayName(uri), uri, index));
+            long copied = 0;
+            try (InputStream in = getContentResolver().openInputStream(uri);
+                    FileOutputStream os = new FileOutputStream(dest)) {
+                if (in == null) throw new Exception(T("no pude leer el archivo", "could not read the file"));
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    copied += n;
+                    total += n;
+                    if (copied > MAX_SHARE_BYTES) {
+                        throw new Exception(T("archivo demasiado grande", "file too large"));
+                    }
+                    if (total > MAX_SHARE_TOTAL_BYTES) {
+                        throw new Exception(T("archivos demasiado grandes", "files too large"));
+                    }
+                    os.write(buf, 0, n);
+                }
+            } catch (Exception e) {
+                if (dest.exists()) dest.delete();
+                throw e;
+            }
+            out.add(dest);
+        }
+        return out;
+    }
+
+    private String displayName(Uri uri) {
+        if (uri == null) return "shared";
+        try (Cursor c = getContentResolver().query(uri,
+                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String name = c.getString(0);
+                if (name != null && !name.trim().isEmpty()) return name;
+            }
+        } catch (Exception ignored) {
+        }
+        String last = uri.getLastPathSegment();
+        return last == null || last.trim().isEmpty() ? "shared" : last;
+    }
+
+    private String sanitizeShareName(String raw, Uri uri, int index) {
+        String name = raw == null ? "" : raw.trim();
+        if (name.isEmpty()) name = "shared";
+        name = name.replaceAll("[^A-Za-z0-9._-]", "_");
+        int dot = name.lastIndexOf('.');
+        String ext = dot > 0 ? name.substring(dot) : "";
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        if (base.isEmpty()) base = "shared";
+        if (base.length() > 60) base = base.substring(0, 60);
+        if (ext.length() > 16) ext = "";
+        if (ext.isEmpty()) {
+            String mime = getContentResolver().getType(uri);
+            if (mime != null) {
+                String guessed = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+                if (guessed != null) ext = "." + guessed;
+            }
+        }
+        return index + "-" + base + "-" + System.currentTimeMillis() + ext;
+    }
+
+    private void cleanupOldShares(File dir) {
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        long cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000;
+        for (File file : files) {
+            if (file.isFile() && file.lastModified() < cutoff) file.delete();
+        }
+    }
+
+    private String buildShareMessage(PendingShare share, List<File> files, String instruction) {
+        StringBuilder sb = new StringBuilder();
+        if (share.subject != null && !share.subject.trim().isEmpty()) {
+            sb.append(share.subject.trim()).append("\n\n");
+        }
+        if (share.text != null && !share.text.trim().isEmpty()) {
+            sb.append(share.text.trim()).append("\n\n");
+        }
+        if (!files.isEmpty()) {
+            sb.append(T("Archivos compartidos:", "Shared files:")).append("\n");
+            for (File file : files) sb.append("- ").append(file.getAbsolutePath()).append("\n");
+            sb.append("\n");
+        }
+        String extra = instruction == null ? "" : instruction.trim();
+        if (!extra.isEmpty()) sb.append(extra);
+        else sb.append(T("Revisa lo que te comparto.", "Take a look at what I'm sharing."));
+        return sb.toString().trim();
+    }
+
+    private String shareTitle(PendingShare share) {
+        String title = share.subject;
+        if (title == null || title.trim().isEmpty()) {
+            if (share.text != null) {
+                title = share.text.trim();
+                int nl = title.indexOf('\n');
+                if (nl >= 0) title = title.substring(0, nl);
+            }
+        }
+        if ((title == null || title.trim().isEmpty()) && !share.uris.isEmpty()) {
+            title = displayName(share.uris.get(0));
+        }
+        if (title == null || title.trim().isEmpty()) {
+            title = T("Compartido desde Android", "Shared from Android");
+        }
+        title = title.trim();
+        return title.length() > 80 ? title.substring(0, 80) : title;
+    }
+
+    private String createShareSession(PendingShare share) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("title", shareTitle(share));
+        JSONObject session = httpJson("POST", "/session", body, 20000);
+        String id = session.optString("id", "");
+        if (id.isEmpty()) throw new Exception(T("respuesta sin sesion", "response without a session"));
+        return id;
+    }
+
+    private void sendSharePrompt(String sessionId, String text) throws Exception {
+        JSONArray parts = new JSONArray();
+        parts.put(new JSONObject().put("type", "text").put("text", text));
+        JSONObject body = new JSONObject().put("parts", parts);
+        String path = "/session/" + Uri.encode(sessionId);
+        try {
+            httpJson("POST", path + "/prompt_async", body, 30000);
+        } catch (Exception e) {
+            String msg = e.getMessage() == null ? "" : e.getMessage();
+            if (!msg.contains("404")) throw e;
+            httpJson("POST", path + "/message", body, 600000);
+        }
+    }
+
+    private JSONObject httpJson(String method, String path, JSONObject body, int readTimeout)
+            throws Exception {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new java.net.URL(URL + path).openConnection();
+            c.setRequestMethod(method);
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(readTimeout);
+            c.setRequestProperty("Accept", "application/json");
+            c.setRequestProperty("User-Agent", "opencode-android");
+            if (body != null) {
+                byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
+                c.setDoOutput(true);
+                c.setFixedLengthStreamingMode(data.length);
+                c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                try (OutputStream os = c.getOutputStream()) {
+                    os.write(data);
+                }
+            }
+            int code = c.getResponseCode();
+            InputStream in = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream();
+            String text = readAll(in);
+            if (code < 200 || code >= 300) throw new Exception("HTTP " + code + " " + text);
+            return text.trim().isEmpty() ? new JSONObject() : new JSONObject(text);
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private String httpGetText(String path) throws Exception {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new java.net.URL(URL + path).openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(20000);
+            c.setRequestProperty("Accept", "application/json");
+            c.setRequestProperty("User-Agent", "opencode-android");
+            int code = c.getResponseCode();
+            InputStream in = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream();
+            String text = readAll(in);
+            if (code < 200 || code >= 300) throw new Exception("HTTP " + code + " " + text);
+            return text;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private String readAll(InputStream in) throws Exception {
+        if (in == null) return "";
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) sb.append(line).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private String shareSessionUrl(String sessionId) {
+        String key = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(URL.getBytes(StandardCharsets.UTF_8));
+        return URL + "/server/" + key + "/session/" + Uri.encode(sessionId);
+    }
+
+    private static class PendingShare {
+        String text;
+        String subject;
+        final List<Uri> uris = new ArrayList<>();
+    }
+
+    private static class ShareSession {
+        final String id;
+        final String title;
+        final long updated;
+
+        ShareSession(String id, String title, long updated) {
+            this.id = id;
+            this.title = title;
+            this.updated = updated;
+        }
     }
 
     /** Puente: la web cree que crea Notification; en realidad avisa a Android. */
@@ -3431,6 +4193,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean hasAllFilesAccess() {
+        if (Build.VERSION.SDK_INT < 30) return true;
         try {
             return Environment.isExternalStorageManager();
         } catch (Exception e) {

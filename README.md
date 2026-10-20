@@ -21,6 +21,7 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 - **One-tap chat**: starts `opencode serve` in Termux and opens the local UI (`http://127.0.0.1:4096`).
 - **Device control over wireless ADB (optional)**: with Android 11+ wireless debugging paired inside Termux and `android-tools` installed, opencode can launch apps, tap, type, read the UI and take screenshots — no PC (OEM support varies).
 - **First-run wizard**: guides you with or without root (installs Termux, configures permissions, installs opencode).
+- **Share to opencode**: send text or files from any app; check the preview, choose a new or existing conversation, add an optional instruction, and it opens that chat with the content.
 - **Background opencode updates**: downloads with real MB progress, no frozen screen; auto-restarts when done.
 - **Update notifications**: panel button + system notification (even with the app closed, daily check), for new opencode releases and for new versions of this app.
 - **Optional watchdog**: notifies or restarts if the server goes down; boot start.
@@ -92,7 +93,7 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 
 ## Permissions & privacy
 
-- **All files access**: reads the installed version and Termux progress markers.
+- **All files access**: reads the installed version and Termux progress markers, and copies files you share to `Downloads/opencode-shares`.
 - **Install unknown apps**: installs the APK downloaded from a Release.
 - **Notifications**: update and watchdog notices.
 - Nothing leaves your phone except public queries to `api.github.com` (versions) and opencode installer downloads. Diagnostics mask tokens (`sk-***`, `ghp_***`, `Bearer ***`) before display.
@@ -108,6 +109,7 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 
 - On some phones the app freezer can pause long background downloads (see the watchdog interval).
 - The direct "install unknown apps" screen does not exist on all vendors: the app falls back to the app-details page, where the same toggle lives.
+- File sharing accepts up to 10 files (50 MB each, 100 MB total). Copies stay in `Downloads/opencode-shares` and are cleaned after 7 days.
 
 ## Contributing
 
