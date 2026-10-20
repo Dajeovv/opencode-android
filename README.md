@@ -1,6 +1,6 @@
 # OpenCode Android
 
-Android launcher for [opencode](https://github.com/anomalyco/opencode) running on Termux: one tap opens the chat on your phone, with guided setup, background updates with real progress, and update notifications.
+Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real coding agent running on your Android phone. It can inspect and edit files, run commands and work on your projects — no PC required.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![minSdk 26](https://img.shields.io/badge/minSdk-26-blue)
