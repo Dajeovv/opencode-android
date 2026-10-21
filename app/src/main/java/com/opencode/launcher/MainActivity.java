@@ -26,6 +26,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
+import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.ValueCallback;
@@ -74,17 +75,19 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
     /** Repo donde caen los reportes (issues): el proyecto propio. */
     private static final String REPORT_REPO = "Dajeovv/opencode-android";
 
     private static final String HOST = "127.0.0.1";
-    private static final int PORT = 4096;
+    private static final int PORT = BuildConfig.SERVER_PORT;
     private static final String URL = "http://" + HOST + ":" + PORT;
-    private static final String MANUAL_CMD = "opencode serve --hostname 127.0.0.1 --port 4096";
+    private static final String MANUAL_CMD = "opencode serve --hostname 127.0.0.1 --port " + PORT;
     private static final long MAX_SHARE_BYTES = 50L * 1024 * 1024;
     private static final long MAX_SHARE_TOTAL_BYTES = 100L * 1024 * 1024;
     private static final int MAX_SHARE_FILES = 10;
@@ -181,6 +184,20 @@ public class MainActivity extends AppCompatActivity {
     private volatile int shareSessionsGeneration = 0;
     private ActivityResultLauncher<String> notifPermLauncher;
     private boolean notifPermTried = false;
+    /** El aviso de notificaciones ya tiene respuesta (para encadenar el salto a
+     *  Ajustes sin que los dos dialogos se pisen). */
+    private boolean notifPermAnswered = false;
+    /** Arranque del servidor en curso (evita lanzar dos a la vez). */
+    private boolean starting = false;
+    /** Se acaba de abrir Ajustes a pedir el permiso de archivos: al volver
+     *  hay que mirar si lo han dado o no. */
+    private boolean filesAskPending = false;
+    /** Permiso de "todos los archivos": en Android 11+ no hay dialogo, hay que
+     *  llevar al usuario al ajuste de la app. Se pide solo una vez por sesion. */
+    private boolean filesPermTried = false;
+    /** Arranque del servidor en espera: el usuario esta en Ajustes dando el
+     *  permiso de archivos; al volver se arranca solo. */
+    private boolean pendingStartAfterPerms = false;
     private ActivityResultLauncher<Intent> lockLauncher;
     /** Desbloqueo ya pasado en esta vida de la app (el bloqueo se pide una vez). */
     private boolean unlockedRun = false;
@@ -194,6 +211,7 @@ public class MainActivity extends AppCompatActivity {
     /** Aviso de update: el boton Actualizar solo existe si hay update real
      *  (instalada < ultima de GitHub). Sin update, desaparece. */
     private boolean updatePending = false;
+    private boolean updateInstallable = true;
     private String updInstalled = "";
     private String updLatest = "";
     /** Aviso de update del launcher: release con APK mas nuevo que esta version. */
@@ -290,14 +308,26 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.splashTitle).animate().alpha(1f).setStartDelay(120)
                 .setDuration(350).start();
         Handler splashHandler = new Handler(Looper.getMainLooper());
-        // Sin servidor: entra al panel con animacion (no se queda colgado).
-        splashHandler.postDelayed(() -> {
-            if (!splashDone && web.getUrl() == null) hideSplash();
-        }, 2500);
-        // Seguridad: nunca dejar el splash clavado.
-        splashHandler.postDelayed(() -> {
-            if (!splashDone) hideSplash();
-        }, 9000);
+        if (LocalRuntime.available(this)) {
+            // Runtime local: el splash (logo + cargando) aguanta hasta que el
+            // chat este dentro. Si el servidor no llega, se destapa el panel
+            // para que se pueda reintentar a mano.
+            splashHandler.postDelayed(() -> {
+                if (!splashDone && !serverOpen) {
+                    log("El servidor local no respondio a tiempo: destapo el panel.");
+                    hideSplash();
+                }
+            }, 120000);
+        } else {
+            // Sin servidor: entra al panel con animacion (no se queda colgado).
+            splashHandler.postDelayed(() -> {
+                if (!splashDone && web.getUrl() == null) hideSplash();
+            }, 2500);
+            // Seguridad: nunca dejar el splash clavado.
+            splashHandler.postDelayed(() -> {
+                if (!splashDone) hideSplash();
+            }, 9000);
+        }
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
@@ -423,7 +453,20 @@ public class MainActivity extends AppCompatActivity {
                 log("WebView error (vuelvo al panel, sin blanco): "
                         + (error == null ? "?" : String.valueOf(error.getDescription())));
                 snack(T("Servidor no responde", "Server not answering"));
+                hideSplash();
             }
+            @Override
+            public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler,
+                    String host, String realm) {
+                if (host != null && (host.equals(HOST)
+                        || host.equalsIgnoreCase("localhost")
+                        || host.startsWith(HOST + ":"))) {
+                    handler.proceed("opencode", LocalRuntime.serverPassword(MainActivity.this));
+                } else {
+                    super.onReceivedHttpAuthRequest(view, handler, host, realm);
+                }
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri u = request.getUrl();
@@ -487,8 +530,14 @@ public class MainActivity extends AppCompatActivity {
 
         notifPermLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(), granted -> {
+                    notifPermAnswered = true;
                     log(granted ? "Avisos activados: sonara al terminar el agente."
                             : "Avisos denegados: no sonara al terminar el agente.");
+                    // Encadenado: primero el aviso de notificaciones, despues el
+                    // salto a Ajustes para el permiso de archivos.
+                    if (LocalRuntime.available(this) && !hasAllFilesAccess()) {
+                        askAllFilesAccess();
+                    }
                 });
         lockLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(), r -> {
@@ -510,6 +559,16 @@ public class MainActivity extends AppCompatActivity {
                 && !getSharedPreferences("app", MODE_PRIVATE).getBoolean("notif_perm_asked", false)) {
             getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("notif_perm_asked", true).apply();
             notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS);
+        }
+        // Runtime local: se pide tambien el acceso a archivos la primera vez, en
+        // vez de dejar que el usuario lo descubra cuando algo falla. Se abre
+        // ya, sin esperar: el hilo principal se ocupa en un par de segundos.
+        // Si el aviso de notificaciones sigue en pantalla, el salto a Ajustes
+        // espera a que el usuario conteste (si no, se pisan los dos dialogos).
+        if (LocalRuntime.available(this) && !hasAllFilesAccess()
+                && !getSharedPreferences("app", MODE_PRIVATE).getBoolean("files_perm_asked", false)) {
+            getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("files_perm_asked", true).apply();
+            if (!notifDialogPending()) askAllFilesAccess();
         }
 
         web.setWebChromeClient(new WebChromeClient() {
@@ -684,7 +743,7 @@ public class MainActivity extends AppCompatActivity {
             btnRestart.setEnabled(false);
             log("Reiniciando servidor...");
             new Thread(() -> {
-                String out = useRoot() ? RootUtil.stopServer() : TermuxRunner.stopViaService(this);
+                String out = stopRuntime();
                 boolean gone = waitForPortGone(8000);
                 runOnUiThread(() -> {
                     setBusy(false);
@@ -701,7 +760,7 @@ public class MainActivity extends AppCompatActivity {
             btnStop.setEnabled(false);
             log("Deteniendo servidor (manual o de la app)...");
             new Thread(() -> {
-                String out = useRoot() ? RootUtil.stopServer() : TermuxRunner.stopViaService(this);
+                String out = stopRuntime();
                 boolean open = !waitForPortGone(6000);
                 runOnUiThread(() -> {
                     setBusy(false);
@@ -780,6 +839,24 @@ public class MainActivity extends AppCompatActivity {
         // Al volver de Ajustes/Termux se recalculan los pasos: la tira de
         // estados y el oscurecido de Iniciar quedan al dia solos.
         refreshStepStatus();
+        // Si el usuario fue a Ajustes a dar el permiso de archivos, el arranque
+        // que se quedo esperando continua solo.
+        if (filesAskPending) {
+            filesAskPending = false;
+            if (!hasAllFilesAccess()) {
+                // Denegado: se destapa el panel para poder reintentar a mano.
+                pendingStartAfterPerms = false;
+                starting = false;
+                hideSplash();
+            }
+        }
+        if (pendingStartAfterPerms && hasAllFilesAccess()) onAllFilesAccessReady();
+        // Runtime local: si el servidor no esta, se levanta solo al abrir la app
+        // y se entra al chat en cuanto responde.
+        if (LocalRuntime.available(this) && pendingShare == null && !serverOpen && !starting
+                && !isPortOpen() && hasAllFilesAccess()) {
+            autoOpenIfRunning();
+        }
     }
 
     /** Paso 1 automatico: baja de GitHub el APK de Termux para esta ABI y abre el instalador. */
@@ -1155,6 +1232,86 @@ public class MainActivity extends AppCompatActivity {
         return getSharedPreferences("app", MODE_PRIVATE).getBoolean("auto_perm", true);
     }
 
+    private String stopRuntime() {
+        if (LocalRuntime.available(this)) {
+            LocalServerService.stop(this);
+            LocalRuntime.stop();
+            return "runtime local detenido";
+        }
+        return useRoot() ? RootUtil.stopServer() : TermuxRunner.stopViaService(this);
+    }
+
+    private void startLocalServer() {
+        new Thread(() -> {
+            StringBuilder t = new StringBuilder();
+            try {
+                t.append("0) runtime local (proot)...\n");
+                LocalServerService.start(this);
+                t.append("Servicio lanzado; esperando el puerto ").append(PORT).append("...\n");
+                boolean open = waitForPort(20000);
+                boolean httpOk = false;
+                if (open) {
+                    t.append("Puerto abierto; esperando el primer HTTP 200...\n");
+                    httpOk = waitForHttp(45000);
+                }
+                final boolean done = open;
+                final boolean httpOkF = httpOk;
+                String transcript = t.toString();
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    starting = false;
+                    refreshStepStatus();
+                    serverOpen = done;
+                    refreshActionButtons();
+                    setDot(done);
+                    txtStatus.setText(done ? T("Servidor abierto", "Server open")
+                            : T("Servidor sigue cerrado", "Server still closed"));
+                    log(transcript + (done
+                            ? "OK: runtime local en " + URL
+                            : "FALLO: revisa logcat con etiqueta OpenCodeLocal"));
+                    if (done) {
+                        getSharedPreferences("app", MODE_PRIVATE).edit()
+                                .putBoolean("onboarding_done", true)
+                                .putBoolean("wizard_done", true)
+                                .putBoolean("setup_ok", true).apply();
+                        applyOnboarding();
+                    } else {
+                        refreshGuide();
+                        // Si no arranco, el splash se destapa: el panel muestra el
+                        // error y el boton de reintentar.
+                        hideSplash();
+                    }
+                    snack(done ? T("Servidor abierto", "Server open")
+                            : T("No arranco: mira el registro", "Did not start: check the log"));
+                    if (done && !shareBlocksAutoOpen()) {
+                        if (httpOkF) {
+                            setSplashStatus(T("Abriendo el chat...", "Opening the chat..."));
+                            enterChatLocked(() -> {
+                                webLoad(URL);
+                                setFullscreen(true);
+                            });
+                        } else {
+                            snack(T("Servidor aun arrancando, pulsa Abrir chat en unos segundos",
+                                    "Server still starting, press Open chat in a few seconds"));
+                        }
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    setBusy(false);
+                    starting = false;
+                    refreshStepStatus();
+                    refreshActionButtons();
+                    setDot(false);
+                    txtStatus.setText(T("Runtime local fallo", "Local runtime failed"));
+                    log(t.toString() + "ERROR: " + e + "\nRevisa logcat con etiqueta OpenCodeLocal.");
+                    snack(T("Runtime local fallo, mira el registro", "Local runtime failed, check the log"));
+                    hideSplash();
+                });
+            }
+        }).start();
+    }
+
     /** Arranque SIN root: reparar config + serve, todo por intents RUN_COMMAND
      *  (se ejecutan dentro de Termux; exige allow-external-apps). */
     private void startServerNoRoot() {
@@ -1223,7 +1380,7 @@ public class MainActivity extends AppCompatActivity {
                     if (!shareBlocksAutoOpen()) {
                         if (httpOkF) {
                             enterChatLocked(() -> {
-                                web.loadUrl(URL);
+                                webLoad(URL);
                                 setFullscreen(true);
                             });
                             new Thread(() -> {
@@ -1246,6 +1403,27 @@ public class MainActivity extends AppCompatActivity {
         clearWatchHold();
         setBusy(true);
         btnStart.setEnabled(false);
+        if (LocalRuntime.available(this)) {
+            // El runtime local necesita leer/escribir archivos del movil: sin el
+            // permiso de archivos se pide ahora y el arranque sigue al volver.
+            if (!hasAllFilesAccess()) {
+                pendingStartAfterPerms = true;
+                if (filesPermTried) {
+                    // Ya se pidio en esta sesion: se destapa el panel con el aviso
+                    // en vez de dejar el splash esperando.
+                    pendingStartAfterPerms = false;
+                    starting = false;
+                    hideSplash();
+                    snack(T("Falta 'todos los archivos' para arrancar el agente",
+                            "All files access is needed to start the agent"));
+                } else {
+                    askAllFilesAccess();
+                }
+                return;
+            }
+            startLocalServer();
+            return;
+        }
         // Sin Termux no hay donde correr: igual con root que sin root, a descargarlo.
         if (!TermuxRunner.isTermuxInstalled(this)) {
             setBusy(false);
@@ -1343,7 +1521,7 @@ public class MainActivity extends AppCompatActivity {
                     if (!shareBlocksAutoOpen()) {
                         if (httpOkF) {
                             enterChatLocked(() -> {
-                                web.loadUrl(URL);
+                                webLoad(URL);
                                 setFullscreen(true);
                             });
                             new Thread(() -> {
@@ -1818,7 +1996,7 @@ public class MainActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         setBusy(false);
                         setFullscreen(true);
-                        web.loadUrl(sessionUrl);
+                        webLoad(sessionUrl);
                     });
                     sendSharePrompt(sessionId, message);
                     runOnUiThread(() -> snack(T("Compartido con opencode", "Shared with opencode")));
@@ -2201,11 +2379,24 @@ public class MainActivity extends AppCompatActivity {
             Log.d("OpenCode", "foot-fix fallo: " + e.getMessage());
         }
     }
+    private String basicAuth() {
+        String raw = "opencode:" + LocalRuntime.serverPassword(this);
+        return "Basic " + Base64.getEncoder().encodeToString(
+                raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Carga con Basic auth para el servidor local (la UI v2 la exige). */
+    private void webLoad(String url) {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Authorization", basicAuth());
+        web.loadUrl(url, headers);
+    }
+
     /** Una sola carga de la URL (evita recargas dobles que se ven como saltos). */
     private synchronized void loadChatUrl() {
         if (!urlLoading && web.getUrl() == null) {
             urlLoading = true;
-            web.loadUrl(URL);
+            webLoad(URL);
         }
     }
 
@@ -2219,6 +2410,16 @@ public class MainActivity extends AppCompatActivity {
     /** Chat-first: al abrir la app, si el servidor ya responde, directo al chat sin toques.
      *  Si esta caido, lo arranca solo y la secuencia abre el chat al acabar. */
     private void autoOpenIfRunning() {
+        if (LocalRuntime.available(this)) {
+            // Runtime local: arranca solo y no se repite si ya esta arrancando.
+            if (serverOpen || starting) return;
+            starting = true;
+            new Handler(Looper.getMainLooper()).post(() -> {
+                setSplashStatus(T("Arrancando servidor...", "Starting server..."));
+                startServerSequence();
+            });
+            return;
+        }
         setSplashStatus(T("Comprobando servidor...", "Checking server..."));
         new Thread(() -> {
             if (waitForHttp(15000)) {
@@ -2362,7 +2563,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyOnboarding() {
-        boolean onb = isOnboarded();
+        boolean onb = isOnboarded() || LocalRuntime.available(this);
         View guide = findViewById(R.id.cardGuide);
         if (guide != null) guide.setVisibility(onb ? View.GONE : View.VISIBLE);
         // Tira de estados de los 5 pasos: solo mientras no este todo hecho.
@@ -2379,7 +2580,7 @@ public class MainActivity extends AppCompatActivity {
 
     /** Guia paso a paso: detecta en que paso vas y te pone el siguiente delante. */
     private void refreshGuide() {
-        if (isOnboarded()) {
+        if (isOnboarded() || LocalRuntime.available(this)) {
             runOnUiThread(this::applyOnboarding);
             return;
         }
@@ -2655,64 +2856,80 @@ public class MainActivity extends AppCompatActivity {
                 }
                 // Solo calienta la pagina si responde de verdad (si no, el error
                 // dejaba blanco y getUrl ya no nulo impedia reintentar).
-                if (open && web.getUrl() == null && waitForHttp(6000)) loadChatUrl();
+                // En runtime local NO se precarga: el arranque local abre el
+                // chat a pantalla completa y precargarlo dejaba el panel
+                // delante de la web (parpadeo de la pantalla inicial).
+                if (open && web.getUrl() == null && !LocalRuntime.available(this)
+                        && waitForHttp(6000)) loadChatUrl();
             });
         }).start();
     }
 
     /** Aviso de update: compara instalada vs ultima de GitHub (cache 24h).
-     *  Sin update el boton Actualizar desaparece; con update aparece + aviso
-     *  al entrar. Fallo de red o de Termux = silencio, no error visible. */
+     *  Con runtime empaquetado solo avisa: el binario va dentro del APK. */
     private void checkForUpdate(boolean verbose) {
+        final boolean local = LocalRuntime.available(this);
+        final String activeVer = LocalRuntime.activeVersion(this);
+        final String runtimeKey = local ? "local:" + activeVer : "termux";
         android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
         long ts = p.getLong("upd_ts", 0);
-        // upd_v: si el formato/cache cambia, se re-chequea aunque haya cache.
-        // v4 = era sin-root + diagnostico; un chequeo que nunca leyo la instalada
-        // no cuenta como valido (reintenta a la proxima entrada, no 24h despues).
-        boolean fresh = p.getInt("upd_v", 0) == 4
+        boolean fresh = p.getInt("upd_v", 0) == 5
                 && !p.getString("upd_installed", "").isEmpty()
+                && runtimeKey.equals(p.getString("upd_runtime", ""))
                 && System.currentTimeMillis() - ts < 24L * 3600 * 1000;
         if (fresh && !verbose) {
             updatePending = p.getBoolean("upd_pending", false);
+            updateInstallable = !local;
             updInstalled = p.getString("upd_installed", "");
             updLatest = p.getString("upd_latest", "");
             refreshUpdateBtn();
-            if (updatePending) snack(T("Actualización disponible: ", "Update available: ")
-                    + updInstalled + " → " + updLatest);
+            if (updatePending) snack(local
+                    ? bundledUpdateText(updInstalled, updLatest)
+                    : T("Actualización disponible: ", "Update available: ")
+                            + updInstalled + " → " + updLatest);
             maybeNotifyOpencode(updatePending, updInstalled, updLatest);
             return;
         }
         new Thread(() -> {
-            // La deteccion de root corre en otro hilo al arrancar: esperarla
-            // (si no, se elegiria la via sin-root y fallaria en vano).
-            long wEnd = System.currentTimeMillis() + 12000;
-            while (!rootChecked && System.currentTimeMillis() < wEnd) {
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    break;
+            if (!local) {
+                // La deteccion de root corre en otro hilo al arrancar: esperarla
+                // (si no, se eligiria la via sin-root y fallaria en vano).
+                long wEnd = System.currentTimeMillis() + 12000;
+                while (!rootChecked && System.currentTimeMillis() < wEnd) {
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
                 }
             }
             synchronized (updDbg) {
                 updDbg.setLength(0);
-                updDbg.append("root=").append(useRoot())
-                        .append(" arch=").append(hasAllFilesAccess() ? "ok" : "sin-acceso");
+                if (local) {
+                    updDbg.append("local=").append(activeVer);
+                } else {
+                    updDbg.append("root=").append(useRoot());
+                }
+                updDbg.append(" arch=").append(hasAllFilesAccess() ? "ok" : "sin-acceso");
             }
-            android.util.Log.d("OC-Update", "check hilo: rootChecked=" + rootChecked
+            android.util.Log.d("OC-Update", "check hilo: local=" + local
+                    + " rootChecked=" + rootChecked
                     + " hasRoot=" + hasRoot + " useRoot=" + useRoot()
                     + " arch=" + hasAllFilesAccess());
-            String installed = queryInstalledVersion();
+            String installed = local ? activeVer : queryInstalledVersion();
             String latest = fetchLatestTag();
             boolean pending = installed != null && latest != null
                     && cmpVer(latest, installed) > 0;
             getSharedPreferences("app", MODE_PRIVATE).edit()
-                    .putInt("upd_v", 4)
+                    .putInt("upd_v", 5)
                     .putLong("upd_ts", System.currentTimeMillis())
+                    .putString("upd_runtime", runtimeKey)
                     .putBoolean("upd_pending", pending)
                     .putString("upd_installed", installed != null ? installed : "")
                     .putString("upd_latest", latest != null ? latest : "").apply();
             runOnUiThread(() -> {
                 updatePending = pending;
+                updateInstallable = !local;
                 updInstalled = installed != null ? installed : "";
                 updLatest = latest != null ? latest : "";
                 refreshUpdateBtn();
@@ -2736,19 +2953,32 @@ public class MainActivity extends AppCompatActivity {
                 }
                 if (verbose) {
                     if (installed == null || latest == null)
-                        snack(T("No se pudo comprobar (sin red o sin Termux)",
-                                "Could not check (no network or no Termux)"));
+                        snack(local
+                                ? T("No se pudo comprobar (sin red)",
+                                        "Could not check (no network)")
+                                : T("No se pudo comprobar (sin red o sin Termux)",
+                                        "Could not check (no network or no Termux)"));
                     else if (pending)
-                        snack(T("Actualización disponible: ", "Update available: ")
-                                + installed + " → " + latest);
+                        snack(local
+                                ? bundledUpdateText(installed, latest)
+                                : T("Actualización disponible: ", "Update available: ")
+                                        + installed + " → " + latest);
                     else
                         snack(T("Estás al día (", "Up to date (") + installed + ")");
                 } else if (pending) {
-                    snack(T("Actualización disponible: ", "Update available: ")
-                            + installed + " → " + latest);
+                    snack(local
+                            ? bundledUpdateText(installed, latest)
+                            : T("Actualización disponible: ", "Update available: ")
+                                    + installed + " → " + latest);
                 }
             });
         }).start();
+    }
+
+    private String bundledUpdateText(String installed, String latest) {
+        return T("OpenCode ", "OpenCode ") + installed + " → " + latest
+                + T(" disponible; toca la notificación para instalarla",
+                        " available; tap the notification to install it");
     }
 
     /** Version instalada: 1) el propio servidor la dice en /global/health
@@ -2855,7 +3085,9 @@ public class MainActivity extends AppCompatActivity {
                 sock.connect(new InetSocketAddress(HOST, PORT), 1500);
                 sock.setSoTimeout(3000);
                 OutputStream out = sock.getOutputStream();
-                out.write("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n".getBytes("UTF-8"));
+                out.write(("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n"
+                        + "Authorization: " + basicAuth() + "\r\n\r\n")
+                        .getBytes(StandardCharsets.UTF_8));
                 out.flush();
                 BufferedReader r = new BufferedReader(
                         new InputStreamReader(sock.getInputStream()));
@@ -2976,7 +3208,7 @@ public class MainActivity extends AppCompatActivity {
         menu.getMenu().add(0, 2, 2, T("Panel de controles", "Controls panel")).setIcon(android.R.drawable.ic_menu_manage);
         menu.getMenu().add(0, 3, 3, T("Reiniciar servidor", "Restart server")).setIcon(android.R.drawable.ic_popup_sync);
         menu.getMenu().add(0, 4, 4, T("Detener servidor", "Stop server")).setIcon(android.R.drawable.ic_menu_close_clear_cancel);
-        if (updatePending)
+        if (updatePending && updateInstallable)
             menu.getMenu().add(0, 5, 5, T("Actualizar opencode ", "Update opencode ")
                     + updInstalled + " → " + updLatest).setIcon(android.R.drawable.ic_menu_upload);
         if (appUpdatePending)
@@ -3067,6 +3299,7 @@ public class MainActivity extends AppCompatActivity {
     private void showOptionsDialog() {
         android.content.SharedPreferences up = getSharedPreferences("app", MODE_PRIVATE);
         updatePending = up.getBoolean("upd_pending", false);
+        updateInstallable = !LocalRuntime.available(this);
         updInstalled = up.getString("upd_installed", "");
         updLatest = up.getString("upd_latest", "");
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
@@ -3334,6 +3567,11 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean stepsGreen = false;
 
     private void refreshStepStatus() {
+        if (LocalRuntime.available(this)) {
+            stepsGreen = true;
+            runOnUiThread(this::applyStepStatus);
+            return;
+        }
         if (wizardDone() || isOnboarded()) {
             stepsGreen = true;
             runOnUiThread(this::applyStepStatus);
@@ -3674,8 +3912,9 @@ public class MainActivity extends AppCompatActivity {
     private void refreshUpdateBtn() {
         View b = findViewById(R.id.btnUpdate);
         if (b == null) return;
-        b.setVisibility(updatePending && !fullscreen ? View.VISIBLE : View.GONE);
-        if (updatePending && b instanceof android.widget.TextView) {
+        b.setVisibility(updatePending && updateInstallable && !fullscreen
+                ? View.VISIBLE : View.GONE);
+        if (updatePending && updateInstallable && b instanceof android.widget.TextView) {
             ((android.widget.TextView) b).setText(
                     T("Actualizar opencode ", "Update opencode ")
                             + updInstalled + " → " + updLatest);
@@ -3688,13 +3927,22 @@ public class MainActivity extends AppCompatActivity {
      *  y la alarma diaria la reutiliza con la app cerrada. */
     private void maybeNotifyOpencode(boolean pending, String installed, String latest) {
         try {
-            if (!pending || latest == null || latest.isEmpty()) return;
+            android.app.NotificationManager nm = (android.app.NotificationManager)
+                    getSystemService(Context.NOTIFICATION_SERVICE);
+            if (!pending || latest == null || latest.isEmpty()) {
+                // Sin datos (red caida) no significa "no hay update": no borrar el aviso.
+                if (!pending && latest != null && !latest.isEmpty() && nm != null)
+                    nm.cancel(ServerWatch.NID_OC);
+                return;
+            }
             android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
             if (latest.equals(p.getString("upd_notified", ""))) return;
-            if (ServerWatch.notifyId(this, ServerWatch.NID_OC,
-                    T("Actualización de opencode", "opencode update"),
-                    installed + " → " + latest + T(": abre la app para instalarla",
-                            ": open the app to install it"))) {
+            String text = installed + " → " + latest + (LocalRuntime.available(this)
+                    ? T(": toca para descargar e instalar",
+                            ": tap to download and install")
+                    : T(": abre la app para instalarla", ": open the app to install it"));
+            if (ServerWatch.notifyOpenCodeUpdate(this,
+                    T("Actualización de opencode", "opencode update"), text, latest)) {
                 p.edit().putString("upd_notified", latest).apply();
             } else {
                 askNotifPermission();
@@ -3733,6 +3981,42 @@ public class MainActivity extends AppCompatActivity {
             notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS);
         } catch (Exception ignored) {
         }
+    }
+
+    /** "Todos los archivos" no se puede pedir con un dialogo desde Android 11:
+     *  hay que abrir el ajuste de la app. Se lleva al usuario directamente y, si
+     *  el permiso ya esta dado, el arranque que estaba esperando continua solo. */
+    private void askAllFilesAccess() {
+        if (Build.VERSION.SDK_INT < 30) return;
+        if (hasAllFilesAccess()) {
+            onAllFilesAccessReady();
+            return;
+        }
+        if (filesPermTried) return;
+        // Si el aviso de notificaciones sigue en pantalla, se espera a que el
+        // usuario conteste (si no, los dos dialogos se pisan).
+        if (notifDialogPending()) return;
+        filesPermTried = true;
+        filesAskPending = true;
+        log("Abro Ajustes: esta app necesita 'todos los archivos' para que el agente"
+                + " lea y escriba tus archivos. Activa el interruptor y vuelve.");
+        openAllFilesSettings();
+    }
+
+    /** Al volver de Ajustes: si ya hay permiso, se arranca lo que estaba esperando. */
+    private void onAllFilesAccessReady() {
+        if (!pendingStartAfterPerms) return;
+        pendingStartAfterPerms = false;
+        startServerSequence();
+    }
+
+    /** El aviso del sistema de notificaciones esta todavia en pantalla. */
+    private boolean notifDialogPending() {
+        if (Build.VERSION.SDK_INT < 33) return false;
+        if (notifPermAnswered) return false;
+        return ContextCompat.checkSelfPermission(this,
+                android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED;
     }
 
     /** Chequeo del launcher: pinta la cache al instante y refresca contra
@@ -4195,6 +4479,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean hasAllFilesAccess() {
         if (Build.VERSION.SDK_INT < 30) return true;
         try {
+            // Refleja el interruptor "todos los archivos" de Ajustes: con el
+            // apagado devuelve false y la app lo pide.
             return Environment.isExternalStorageManager();
         } catch (Exception e) {
             return false;

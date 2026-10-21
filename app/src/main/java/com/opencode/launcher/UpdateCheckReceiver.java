@@ -19,18 +19,33 @@ public class UpdateCheckReceiver extends BroadcastReceiver {
             try {
                 // Binario opencode: avisar solo si nadie lo hizo ya para esta version.
                 try {
+                    boolean local = LocalRuntime.available(ctx);
                     String latest = UpdateCheck.latestOpencode();
-                    String installed = UpdateCheck.p(ctx).getString("upd_installed", "");
+                    String installed = local
+                            ? LocalRuntime.activeVersion(ctx)
+                            : UpdateCheck.p(ctx).getString("upd_installed", "");
                     if (latest != null && !installed.isEmpty()
                             && UpdateCheck.cmpVer(latest, installed) > 0
                             && !latest.equals(UpdateCheck.p(ctx).getString("upd_notified", ""))) {
-                        if (ServerWatch.notifyId(ctx, ServerWatch.NID_OC,
-                                ServerWatch.t(ctx, "Actualización de opencode", "opencode update"),
-                                installed + " → " + latest + ServerWatch.t(ctx,
+                        String text = installed + " -> " + latest + (local
+                                ? ServerWatch.t(ctx,
+                                        ": toca para descargar e instalar",
+                                        ": tap to download and install")
+                                : ServerWatch.t(ctx,
                                         ": abre la app para instalarla",
-                                        ": open the app to install it"))) {
+                                        ": open the app to install it"));
+                        if (ServerWatch.notifyOpenCodeUpdate(ctx,
+                                ServerWatch.t(ctx, "Actualización de opencode", "opencode update"),
+                                text, latest)) {
                             UpdateCheck.p(ctx).edit().putString("upd_notified", latest).apply();
                         }
+                    } else if (latest != null && !installed.isEmpty()
+                            && UpdateCheck.cmpVer(latest, installed) <= 0) {
+                        // Ya no hay update: retirar un aviso viejo si seguia visible.
+                        android.app.NotificationManager nm =
+                                (android.app.NotificationManager) ctx.getSystemService(
+                                        Context.NOTIFICATION_SERVICE);
+                        if (nm != null) nm.cancel(ServerWatch.NID_OC);
                     }
                 } catch (Exception ignored) {
                 }

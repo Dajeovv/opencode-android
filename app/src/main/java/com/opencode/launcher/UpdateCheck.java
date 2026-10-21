@@ -55,6 +55,49 @@ public class UpdateCheck {
         return 0;
     }
 
+    public static final class RuntimeAsset {
+        public final String version;
+        public final String name;
+        public final String url;
+        public final String sha256;
+        public final long size;
+
+        RuntimeAsset(String version, String name, String url, String sha256, long size) {
+            this.version = version;
+            this.name = name;
+            this.url = url;
+            this.sha256 = sha256;
+            this.size = size;
+        }
+    }
+
+    public static RuntimeAsset opencodeRuntimeAsset() {
+        String j = fetchJson("https://api.github.com/repos/" + OPENCODE_REPO + "/releases/latest");
+        if (j == null) return null;
+        try {
+            JSONObject o = new JSONObject(j);
+            String tag = parseVer(o.optString("tag_name", ""));
+            if (tag == null) return null;
+            JSONArray assets = o.optJSONArray("assets");
+            if (assets == null) return null;
+            for (int i = 0; i < assets.length(); i++) {
+                JSONObject a = assets.optJSONObject(i);
+                if (a == null) continue;
+                String name = a.optString("name", "");
+                if (!name.equals("opencode-linux-arm64-musl.tar.gz")) continue;
+                String url = a.optString("browser_download_url", "");
+                String digest = a.optString("digest", "");
+                if (digest.startsWith("sha256:")) digest = digest.substring(7);
+                long size = a.optLong("size", 0);
+                if (url.isEmpty() || digest.isEmpty() || size <= 0) return null;
+                return new RuntimeAsset(tag, name, url, digest, size);
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        return null;
+    }
+
     /** Ultimo tag del binario opencode ("X.Y.Z" o null). */
     public static String latestOpencode() {
         String j = fetchJson("https://api.github.com/repos/" + OPENCODE_REPO + "/releases/latest");

@@ -23,6 +23,7 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 - **First-run wizard**: guides you with or without root (installs Termux, configures permissions, installs opencode).
 - **Share to opencode**: send text or files from any app; check the preview, choose a new or existing conversation, add an optional instruction, and it opens that chat with the content.
 - **Background opencode updates**: downloads with real MB progress, no frozen screen; auto-restarts when done.
+- **Self-updating bundled runtime**: tap the opencode update notification to download and install the official arm64 release in place, with checksum verification and automatic rollback.
 - **Update notifications**: panel button + system notification (even with the app closed, daily check), for new opencode releases and for new versions of this app.
 - **Optional watchdog**: notifies or restarts if the server goes down; boot start.
 - **Bilingual ES/EN**, follows the system light/dark theme.
@@ -88,12 +89,15 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 
 ## Updates
 
-- **opencode**: the app checks GitHub every 24 h (and on every open). When a new version is out, an `Update opencode X → Y` button appears plus a notification.
+- **opencode**: the app checks GitHub every 24 h (and on every open). When a new version is out, a notification appears.
+  - **Running in Termux**: an `Update opencode X → Y` button is also shown and installs it there.
+  - **Running inside the app (bundled runtime)**: tap the notification to download the official `opencode-linux-arm64-musl` release, with real progress, checksum verification and automatic installation. The local server restarts on the new binary; if the new runtime does not answer, the app rolls back to the bundled one automatically.
+  - The downloaded runtime lives in the app's private storage, is used only when it is newer than the bundled one, and old runtimes are removed after a successful update.
 - **this app**: same, with a `New app version X — Download` button + notification. The APK downloads from the GitHub Release itself and installs via the system installer.
 
 ## Permissions & privacy
 
-- **All files access**: reads the installed version and Termux progress markers, and copies files you share to `Downloads/opencode-shares`.
+- **All files access**: reads the installed version and Termux progress markers, and copies files you share to `Downloads/opencode-shares`. The app opens this permission page by itself the first time it needs it.
 - **Install unknown apps**: installs the APK downloaded from a Release.
 - **Notifications**: update and watchdog notices.
 - Nothing leaves your phone except public queries to `api.github.com` (versions) and opencode installer downloads. Diagnostics mask tokens (`sk-***`, `ghp_***`, `Bearer ***`) before display.
@@ -104,6 +108,19 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 - Create `local.properties` with `sdk.dir=/path/to/your/sdk` (never committed).
 - Debug: `./gradlew :app:assembleDebug` (the first run downloads dependencies).
 - Signed release: `./gradlew :app:assembleRelease` (needs a `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; that file is never committed — keep a copy of the `.jks` and its passwords outside the repo).
+- Beta (Next): `./gradlew :app:assembleBeta` — same as the release but with the `.next` package id, its own port and the beta version suffix, signed with the release key.
+- The embedded opencode runtime (`app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so`, ~186 MB) is **not in the repository**: it is above git's 100 MB per-file limit. It ships inside the published APK. To build the runtime-enabled variants, put the binary in that path first (take it from a published release APK).
+
+## Beta (Next)
+
+`v4.0.0-beta.1` is the first **Next** build: opencode runs inside the app (proot, no
+Termux, no root), the app starts the server by itself and lands straight in the
+chat, and tapping the opencode update notification downloads, verifies and
+installs the official binary in place.
+
+- Package: `com.opencode.launcher.next` (it installs next to the current app).
+- Download: [OpenCodeAndroid-v4.0.0-beta.1.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.1) from the pre-release page.
+- arm64 only, Android 8+.
 
 ## Known limitations
 

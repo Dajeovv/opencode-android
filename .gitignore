@@ -22,3 +22,9 @@ google-services.json
 *.log
 .DS_Store
 Thumbs.db
+
+# Embedded opencode runtime: the binary is ~186 MB, far above git's 100 MB
+# per-file limit. It ships inside the published APK, not in the repository.
+# See README ("Build from source") for how to restore it.
+app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so
+app/src/main/runtime-v1-backup/
