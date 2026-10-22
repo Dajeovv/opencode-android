@@ -277,6 +277,16 @@
                 app:icon="@android:drawable/ic_menu_close_clear_cancel" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnTools"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:minHeight="48dp"
+                android:text="Herramientas"
+                app:icon="@android:drawable/ic_menu_manage" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnTermux"
                 style="?attr/borderlessButtonStyle"
                 android:layout_width="match_parent"

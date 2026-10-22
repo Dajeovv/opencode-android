@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -36,10 +37,26 @@ public class LocalServerService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             LocalRuntime.stop();
+            ToolboxServer.stop();
             stopForeground(true);
             stopSelf();
             return START_NOT_STICKY;
         }
+        // La caja de herramientas viaja dentro del APK: se instala sola la
+        // primera vez, sin que el usuario tenga que hacer nada.
+        if (!LocalToolbox.installed(this)) {
+            ToolboxService.installBundled(this);
+        } else {
+            // Autodiagnostico una vez, para dejar constancia en el registro
+            // de que las herramientas responden dentro del sandbox.
+            SharedPreferences sp = getSharedPreferences("app", MODE_PRIVATE);
+            if (!sp.getBoolean("toolbox_selftest", false)) {
+                sp.edit().putBoolean("toolbox_selftest", true).apply();
+                new Thread(() -> ToolboxService.selfTest(this), "toolbox-selftest").start();
+            }
+        }
+        ToolboxServer.start(this);
+        LocalToolbox.refreshShim(this);
         startForeground(NID, notification());
         try {
             LocalRuntime.start(this, BuildConfig.SERVER_PORT);
@@ -64,6 +81,7 @@ public class LocalServerService extends Service {
     @Override
     public void onDestroy() {
         LocalRuntime.stop();
+        ToolboxServer.stop();
         super.onDestroy();
     }
 

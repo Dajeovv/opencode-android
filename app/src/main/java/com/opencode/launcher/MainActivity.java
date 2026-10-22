@@ -357,6 +357,12 @@ public class MainActivity extends AppCompatActivity {
             return false;
         });
 
+        // La caja de herramientas viaja dentro del APK: se instala sola, sin
+        // que el usuario tenga que hacer nada (no depende de los permisos ni
+        // de que arranque el servidor).
+        if (LocalRuntime.available(this) && !LocalToolbox.installed(this)) {
+            ToolboxService.installBundled(this);
+        }
         pendingShare = parseShareIntent(getIntent());
         if (pendingShare == null) {
             autoOpenIfRunning();

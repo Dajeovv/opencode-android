@@ -28,3 +28,7 @@ Thumbs.db
 # See README ("Build from source") for how to restore it.
 app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so
 app/src/main/runtime-v1-backup/
+
+# Termux packages bundled as assets (~50 MB of .deb). They ship inside the
+# published APK; the script that fetches them is in the README.
+app/src/main/assets/toolbox/

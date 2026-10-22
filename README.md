@@ -110,17 +110,28 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 - Signed release: `./gradlew :app:assembleRelease` (needs a `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; that file is never committed — keep a copy of the `.jks` and its passwords outside the repo).
 - Beta (Next): `./gradlew :app:assembleBeta` — same as the release but with the `.next` package id, its own port and the beta version suffix, signed with the release key.
 - The embedded opencode runtime (`app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so`, ~186 MB) is **not in the repository**: it is above git's 100 MB per-file limit. It ships inside the published APK. To build the runtime-enabled variants, put the binary in that path first (take it from a published release APK).
+- The Termux packages bundled as assets (`app/src/main/assets/toolbox/`, ~50 MB of `.deb`) are not in the repository either. They come from the official Termux mirror (`packages.termux.dev`, `binary-aarch64`): download the closure of `git python python-pip python-ensurepip-wheels nodejs openssh make curl wget bash coreutils` and save each one as `<package name>.deb`, plus a `packages.txt` with `name<TAB>version` lines.
 
 ## Beta (Next)
 
-`v4.0.0-beta.1` is the first **Next** build: opencode runs inside the app (proot, no
-Termux, no root), the app starts the server by itself and lands straight in the
-chat, and tapping the opencode update notification downloads, verifies and
-installs the official binary in place.
+`v4.0.0-beta.2` is the first **Next** build with the full toolbox: opencode runs
+inside the app (proot, no Termux, no root), the app starts the server by itself
+and lands straight in the chat, the Termux toolchain is already installed, and
+tapping the opencode update notification downloads, verifies and installs the
+official binary in place.
 
 - Package: `com.opencode.launcher.next` (it installs next to the current app).
-- Download: [OpenCodeAndroid-v4.0.0-beta.1.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.1) from the pre-release page.
+- Download: [OpenCodeAndroid-v4.0.0-beta.2.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.2) from the pre-release page.
 - arm64 only, Android 8+.
+
+### The toolbox
+
+The app carries the Termux packages for aarch64 inside the APK and installs them
+by itself the first time it runs — no extra step, no second app:
+
+- `git`, `python3` (with `pip3`), `node`, `ssh` (OpenSSH), `make`, `curl`, `wget`, `bash`, `coreutils`, `tar`, `gzip` and their dependencies (~200 MB installed in the app's private storage).
+- Anything else from the Termux repository can be added on demand from the chat: `pkg install cmake` (or `clang`, `rust`, `ffmpeg`, …) and the app fetches and installs it in the background.
+- The tools run inside the same sandbox as the agent, under `/data/data/com.termux/files/usr`.
 
 ## Known limitations
 
