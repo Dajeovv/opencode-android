@@ -261,6 +261,9 @@ public final class LocalRuntime {
                 env.put("PREFIX", LocalToolbox.SANDBOX_PREFIX);
                 env.put("TERMUX_HOME", LocalToolbox.SANDBOX_PREFIX);
                 env.put("TMPDIR", tmp.getAbsolutePath());
+                // El pkg de Termux re-selecciona mirror (cosa de su app); aqui
+                // el mirror ya esta en sources.list, asi que se le dice que no.
+                env.put("TERMUX_PKG_NO_MIRROR_SELECT", "1");
                 env.put("OPENCODE_TOOLBOX_TOKEN", serverPassword(app));
                 env.put("OPENCODE_TOOLBOX_PORT", Integer.toString(ToolboxServer.PORT));
             }

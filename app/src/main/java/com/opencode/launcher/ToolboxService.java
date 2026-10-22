@@ -116,7 +116,11 @@ public class ToolboxService extends Service {
     }
 
     /** Comprobacion de humo: cada herramienta responde dentro del sandbox. */
+    private static final java.util.concurrent.atomic.AtomicBoolean SELFTEST_RUNNING =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     static void selfTest(Context ctx) {
+        if (!SELFTEST_RUNNING.compareAndSet(false, true)) return;
         String[] cmds = {
                 "echo PATH=$PATH",
                 "git --version",
@@ -127,7 +131,12 @@ public class ToolboxService extends Service {
                 "ssh -V",
                 "curl --version | head -1",
                 "wget --version | head -1",
-                "which pkg"
+                "which pkg",
+                "dpkg --version | head -1",
+                "apt-get --version | head -1",
+                "dpkg -l | tail -1",
+                "apt-cache policy git | head -3",
+                "pkg list-installed 2>&1 | tail -1"
         };
         for (String c : cmds) {
             String out = LocalRuntime.runInSandbox(ctx, c, 30000);

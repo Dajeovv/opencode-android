@@ -10,7 +10,7 @@ android {
         applicationId "com.opencode.launcher"
         minSdk 26
         targetSdk 34
-        versionCode 161
+        versionCode 162
         versionName "4.0.0"
         buildConfigField "int", "SERVER_PORT", "4096"
         // Version del binario empaquetado en jniLibs. Actualizarla al cambiarlo.
@@ -52,7 +52,7 @@ android {
             initWith release
             matchingFallbacks = ['release']
             applicationIdSuffix ".next"
-            versionNameSuffix "-beta.2"
+            versionNameSuffix "-beta.3"
             buildConfigField "int", "SERVER_PORT", "4098"
             signingConfig signingConfigs.release
         }

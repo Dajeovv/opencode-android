@@ -93,7 +93,19 @@ public final class LocalToolbox {
         return new File(ctx.getFilesDir(), "toolbox");
     }
 
+    /**
+     * ¿Existe el prefijo con herramientas? Sirve para decidir si el sandbox
+     * monta el prefijo y lo mete en el PATH (durante la propia instalacion
+     * todavia no esta, pero dpkg ya vive dentro).
+     */
     public static boolean installed(Context ctx) {
+        File bin = new File(prefix(ctx), "bin");
+        String[] kids = bin.list();
+        return kids != null && kids.length > 0;
+    }
+
+    /** ¿Termino la instalacion completa (con el gestor de paquetes)? */
+    public static boolean complete(Context ctx) {
         return new File(prefix(ctx), ".opencode-toolbox").isFile();
     }
 
@@ -277,10 +289,12 @@ public final class LocalToolbox {
 
         long done = 0;
         Set<String> now = new HashSet<>(installedPackages(ctx));
+        File stage = new File(ctx.getCacheDir(), "tmp/toolbox-debs");
+        deleteTree(stage);
+        if (!stage.mkdirs()) throw new IOException("no staging dir");
         for (Pkg pkg : plan) {
             if (p != null) p.onStep("Instalando " + pkg.name + " " + pkg.version);
-            File deb = new File(debs, pkg.filename.substring(pkg.filename.lastIndexOf('/') + 1)
-                    .replace(':', '_'));
+            File deb = new File(stage, pkg.name + ".deb");
             if (!deb.isFile() || deb.length() != pkg.size) {
                 download(REPO + "/" + pkg.filename, deb, p, done);
             }
@@ -293,12 +307,18 @@ public final class LocalToolbox {
                     throw new IOException("SHA-256 no coincide en " + pkg.name);
                 }
             }
-            extractDeb(deb, pref);
-            now.add(pkg.name);
         }
+        // Los registra el dpkg de verdad, para que apt/pkg los vean.
+        prepareDpkgDirs(prefix(ctx));
+        String out = LocalRuntime.runInSandbox(ctx,
+                "dpkg --unpack /tmp/toolbox-debs/*.deb >/dev/null 2>&1; "
+                        + "dpkg --configure -a 2>&1 | tail -3", 600000);
+        Log.i(TAG, "dpkg: " + out.replace("\n", " | "));
+        for (Pkg pkg : plan) now.add(pkg.name);
         writeManifest(ctx, now, idx);
-        new File(pref, ".opencode-toolbox").createNewFile();
-        writePkgShim(ctx, pref);
+        new File(prefix(ctx), ".opencode-toolbox").createNewFile();
+        writePkgShim(ctx, prefix(ctx));
+        deleteTree(stage);
         return new ArrayList<>(now);
     }
 
@@ -306,6 +326,12 @@ public final class LocalToolbox {
      * Instala los paquetes que vienen dentro del propio APK (assets/toolbox).
      * Se ejecuta solo, en segundo plano, la primera vez: asi las herramientas
      * estan disponibles nada mas instalar, sin descargas ni pasos extra.
+     *
+     * Fase 1: se extraen en Java los paquetes de arranque (apt, dpkg y sus
+     * dependencias) porque hacen falta para poder usar dpkg.
+     * Fase 2: se pasa TODOS los .deb por el dpkg de verdad, para que queden
+     * registrados en su base de datos y apt/pkg sean los de siempre.
+     * Fase 3: apt-get update, para que apt tenga el indice de paquetes.
      */
     public static List<String> installBundled(Context ctx, Progress p) throws IOException {
         String[] names = ctx.getAssets().list("toolbox");
@@ -315,34 +341,128 @@ public final class LocalToolbox {
         if (!debs.isDirectory() && !debs.mkdirs()) throw new IOException("no debs dir");
         File pref = prefix(ctx);
         if (!pref.isDirectory() && !pref.mkdirs()) throw new IOException("no prefix dir");
-        List<String> done = new ArrayList<>();
         Map<String, String> versions = readBundledManifest(ctx);
-        int i = 0;
+        Set<String> boot = readBootstrapList(ctx);
+
+        // Fase 1: arranque (apt/dpkg y lo que necesitan).
         for (String name : names) {
             if (!name.endsWith(".deb")) continue;
-            i++;
-            if (i % 10 == 1 || i == names.length) {
-                Log.i(TAG, "paquete " + i + "/" + names.length + ": " + name);
-            }
-            if (p != null) p.onStep("Instalando " + name + " (" + i + "/" + names.length + ")");
-            File deb = new File(debs, name);
-            if (!deb.isFile() || deb.length() == 0) {
-                try (InputStream in = ctx.getAssets().open("toolbox/" + name);
-                     OutputStream out = new FileOutputStream(deb)) {
-                    byte[] buf = new byte[1 << 16];
-                    int n;
-                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                }
-            }
+            String pkg = nameFromDeb(name);
+            if (!boot.contains(pkg)) continue;
+            if (p != null) p.onStep("Preparando el gestor de paquetes (" + pkg + ")");
+            File deb = copyAsset(ctx, debs, name);
             extractDeb(deb, pref);
-            // El .deb ya esta en el APK: no hace falta guardarlo en disco.
             deb.delete();
+        }
+        prepareDpkgDirs(pref);
+
+        // Fase 2: dpkg de verdad con todos los paquetes.
+        File stage = new File(ctx.getCacheDir(), "tmp/toolbox-debs");
+        deleteTree(stage);
+        if (!stage.mkdirs()) throw new IOException("no staging dir");
+        for (String name : names) {
+            if (!name.endsWith(".deb")) continue;
+            copyAsset(ctx, stage, name);
+        }
+        if (p != null) p.onStep("Registrando los paquetes (dpkg)...");
+        String dpkgOut = LocalRuntime.runInSandbox(ctx,
+                "dpkg --unpack /tmp/toolbox-debs/*.deb >/dev/null 2>&1; "
+                        + "dpkg --configure -a 2>&1 | tail -5", 600000);
+        Log.i(TAG, "dpkg: " + dpkgOut.replace("\n", " | "));
+
+        // Fase 3: el indice de paquetes para apt.
+        if (p != null) p.onStep("Actualizando el indice de apt...");
+        LocalRuntime.runInSandbox(ctx, "apt-get update -qq 2>&1 | tail -3", 300000);
+
+        List<String> done = new ArrayList<>();
+        for (String name : names) {
+            if (!name.endsWith(".deb")) continue;
             done.add(nameFromDeb(name));
         }
         writeManifestBundled(ctx, done, versions);
         new File(pref, ".opencode-toolbox").createNewFile();
         writePkgShim(ctx, pref);
+        deleteTree(stage);
         return done;
+    }
+
+    /** Crea el arbol de trabajo de dpkg y las carpetas que espera apt. */
+    static void prepareDpkgDirs(File pref) {
+        File admin = new File(pref, "var/lib/dpkg");
+        for (String d : new String[]{"info", "updates", "triggers", "alternatives", "parts"}) {
+            File f = new File(admin, d);
+            if (!f.isDirectory()) f.mkdirs();
+        }
+        for (String f : new String[]{"status", "available"}) {
+            File file = new File(admin, f);
+            if (!file.isFile()) {
+                try {
+                    file.createNewFile();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        File etc = new File(pref, "etc/apt");
+        for (String d : new String[]{"apt.conf.d", "preferences.d", "sources.list.d",
+                "trusted.gpg.d", "keyrings"}) {
+            File f = new File(etc, d);
+            if (!f.isDirectory()) f.mkdirs();
+        }
+        File cache = new File(pref, "var/cache/apt/archives/partial");
+        if (!cache.isDirectory()) cache.mkdirs();
+        File lists = new File(pref, "var/lib/apt/lists/partial");
+        if (!lists.isDirectory()) lists.mkdirs();
+        // apt y dpkg escriben aqui; si falta la carpeta se quejan.
+        for (String d : new String[]{"var/log", "var/log/apt", "var/log/dpkg",
+                "var/cache/apt/archives/partial", "var/lib/apt/lists/partial",
+                "var/lib/dpkg/info", "var/lib/dpkg/updates", "var/lib/dpkg/triggers",
+                "var/lib/dpkg/alternatives", "var/lib/dpkg/parts"}) {
+            File f = new File(pref, d);
+            if (!f.isDirectory()) f.mkdirs();
+        }
+        // apt de Termux usa el cache de la app Termux (/data/data/com.termux/cache),
+        // que aqui no existe: se apunta al del propio prefijo.
+        File conf = new File(etc, "apt.conf.d/99opencode");
+        try (java.io.FileWriter w = new java.io.FileWriter(conf, false)) {
+            w.write("Dir::Cache \"" + pref.getAbsolutePath() + "/var/cache/apt\";\n");
+            w.write("Dir::Cache::archives \"" + pref.getAbsolutePath()
+                    + "/var/cache/apt/archives\";\n");
+            w.write("Dir::Cache::pkgcache \"" + pref.getAbsolutePath()
+                    + "/var/cache/apt/pkgcache.bin\";\n");
+            w.write("Dir::Cache::srcpkgcache \"" + pref.getAbsolutePath()
+                    + "/var/cache/apt/srcpkgcache.bin\";\n");
+            w.write("Dir::State::status \"" + pref.getAbsolutePath()
+                    + "/var/lib/dpkg/status\";\n");
+        } catch (IOException ignored) {
+        }
+    }
+
+    /** Copia un asset del APK al disco. */
+    private static File copyAsset(Context ctx, File dir, String name) throws IOException {
+        File dest = new File(dir, name);
+        try (InputStream in = ctx.getAssets().open("toolbox/" + name);
+             OutputStream out = new FileOutputStream(dest)) {
+            byte[] buf = new byte[1 << 16];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        }
+        return dest;
+    }
+
+    /** Lista de paquetes de arranque (los que se extraen en Java). */
+    private static Set<String> readBootstrapList(Context ctx) {
+        Set<String> out = new LinkedHashSet<>();
+        try (InputStream in = ctx.getAssets().open("toolbox/bootstrap.txt");
+             java.io.BufferedReader r = new java.io.BufferedReader(
+                     new java.io.InputStreamReader(in, "UTF-8"))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                String n = line.trim();
+                if (!n.isEmpty()) out.add(n);
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
     }
 
     /** Lee el manifiesto de versiones que viene con los .deb del APK. */
@@ -427,11 +547,15 @@ public final class LocalToolbox {
         }
     }
 
-    /** Shim "pkg" para que el agente pida paquetes desde el shell. */
+    /** Shim "pkg" de respaldo: solo si no esta el de verdad de Termux. */
     private static void writePkgShim(Context ctx, File pref) {
         File bin = new File(pref, "bin");
         if (!bin.isDirectory() && !bin.mkdirs()) return;
         File shim = new File(bin, "pkg");
+        if (shim.isFile()) {
+            // El paquete termux-tools trae el pkg de verdad: ese manda.
+            return;
+        }
         String body = "#!/system/bin/sh\n"
                 + "# Instalador de paquetes de OpenCode (paquetes Termux).\n"
                 + "# uso: pkg install git python ...\n"

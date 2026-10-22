@@ -44,7 +44,7 @@ public class LocalServerService extends Service {
         }
         // La caja de herramientas viaja dentro del APK: se instala sola la
         // primera vez, sin que el usuario tenga que hacer nada.
-        if (!LocalToolbox.installed(this)) {
+        if (!LocalToolbox.complete(this)) {
             ToolboxService.installBundled(this);
         } else {
             // Autodiagnostico una vez, para dejar constancia en el registro

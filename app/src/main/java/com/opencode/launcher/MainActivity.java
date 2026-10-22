@@ -360,7 +360,7 @@ public class MainActivity extends AppCompatActivity {
         // La caja de herramientas viaja dentro del APK: se instala sola, sin
         // que el usuario tenga que hacer nada (no depende de los permisos ni
         // de que arranque el servidor).
-        if (LocalRuntime.available(this) && !LocalToolbox.installed(this)) {
+        if (LocalRuntime.available(this) && !LocalToolbox.complete(this)) {
             ToolboxService.installBundled(this);
         }
         pendingShare = parseShareIntent(getIntent());
