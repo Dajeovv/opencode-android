@@ -1,5 +1,21 @@
 # OpenCode Android
 
+> [!IMPORTANT]
+> ## Next beta — opencode now runs inside the app
+>
+> The current release still installs opencode inside **Termux**. The **Next** beta
+> changes that: the app ships the opencode binary and the whole Termux
+> toolchain, and runs the agent on its own — **no Termux, no root, no setup**.
+>
+> - The server starts by itself when you open the app, and you land straight in the chat.
+> - `git`, `python3` + `pip3`, `node`, `ssh`, `make`, `curl`, `wget` and the real `apt`/`dpkg`/`pkg` are already installed — and `pkg install <anything>` works for the rest of the Termux catalogue.
+> - Tapping the opencode update notification installs the official binary in place, with checksum verification and automatic rollback.
+>
+> **[Download the beta](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.3)** ·
+> arm64 only, Android 8+ · installs as a separate app, next to this one.
+>
+> The stable 4.0 release will follow. Nothing changes for current users until then.
+
 Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real coding agent running on your Android phone. It can inspect and edit files, run commands, and — with wireless ADB — control apps and the UI, all without a PC.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -33,6 +49,9 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 - Android 8.0+ (API 26). Tested on Android 15.
 - [Termux](https://github.com/termux/termux-app) (the app downloads it if missing).
 - Internet connection for the first install and updates.
+
+> Trying the [Next beta](#opencode-android)? Termux is **not** needed there: the
+> agent and its toolbox run inside the app.
 
 ## Installation
 
@@ -112,7 +131,9 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 - The embedded opencode runtime (`app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so`, ~186 MB) is **not in the repository**: it is above git's 100 MB per-file limit. It ships inside the published APK. To build the runtime-enabled variants, put the binary in that path first (take it from a published release APK).
 - The Termux packages bundled as assets (`app/src/main/assets/toolbox/`, ~50 MB of `.deb`) are not in the repository either. They come from the official Termux mirror (`packages.termux.dev`, `binary-aarch64`): download the closure of `git python python-pip python-ensurepip-wheels nodejs openssh make curl wget bash coreutils` and save each one as `<package name>.deb`, plus a `packages.txt` with `name<TAB>version` lines.
 
-## Beta (Next)
+## Beta (Next) — details
+
+See the [Next beta notice at the top](#opencode-android) for the short version.
 
 `v4.0.0-beta.3` is the first **Next** build with a real package manager inside the
 app: opencode runs inside the app (proot, no Termux, no root), the app starts the
@@ -122,7 +143,7 @@ installs the official binary in place.
 
 - Package: `com.opencode.launcher.next` (it installs next to the current app).
 - Download: [OpenCodeAndroid-v4.0.0-beta.3.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.3) from the pre-release page.
-- arm64 only, Android 8+.
+- arm64 only, Android 8+, ~125 MB to download and ~200 MB more once the toolbox is unpacked.
 
 ### The toolbox
 
@@ -134,6 +155,16 @@ by itself the first time it runs — no extra step, no second app:
 - The real Termux `pkg` command: `pkg install`, `pkg remove`, `pkg upgrade`, `pkg list-installed`, `pkg search`, `pkg files`.
 - Anything else from the Termux repository can be added on demand from the chat: `pkg install clang` (which brings `gcc`, `g++` and `cc`), `rust`, `go`, `ffmpeg`, `cmake`… The app fetches it in the background and it is ready for the next command.
 - The tools run inside the same sandbox as the agent, under `/data/data/com.termux/files/usr`.
+
+### How it works
+
+- The opencode binary is embedded in the APK and executed under **proot**, with no
+  Termux and no root.
+- The Termux packages are built with the absolute prefix
+  `/data/data/com.termux/files/usr`, so the app mounts its own prefix there inside
+  the sandbox: the tools see exactly the paths they expect.
+- The bundled packages are registered with the **real dpkg** database and
+  `apt-get update` fills the index, so `apt` and `pkg` behave as in Termux.
 
 ## Known limitations
 
