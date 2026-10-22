@@ -114,14 +114,14 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 
 ## Beta (Next)
 
-`v4.0.0-beta.2` is the first **Next** build with the full toolbox: opencode runs
-inside the app (proot, no Termux, no root), the app starts the server by itself
-and lands straight in the chat, the Termux toolchain is already installed, and
-tapping the opencode update notification downloads, verifies and installs the
-official binary in place.
+`v4.0.0-beta.3` is the first **Next** build with a real package manager inside the
+app: opencode runs inside the app (proot, no Termux, no root), the app starts the
+server by itself and lands straight in the chat, the Termux toolchain is already
+installed, and tapping the opencode update notification downloads, verifies and
+installs the official binary in place.
 
 - Package: `com.opencode.launcher.next` (it installs next to the current app).
-- Download: [OpenCodeAndroid-v4.0.0-beta.2.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.2) from the pre-release page.
+- Download: [OpenCodeAndroid-v4.0.0-beta.3.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.3) from the pre-release page.
 - arm64 only, Android 8+.
 
 ### The toolbox
@@ -129,8 +129,10 @@ official binary in place.
 The app carries the Termux packages for aarch64 inside the APK and installs them
 by itself the first time it runs — no extra step, no second app:
 
+- The real `apt` and `dpkg`, with a real package database and index.
 - `git`, `python3` (with `pip3`), `node`, `ssh` (OpenSSH), `make`, `curl`, `wget`, `bash`, `coreutils`, `tar`, `gzip` and their dependencies (~200 MB installed in the app's private storage).
-- Anything else from the Termux repository can be added on demand from the chat: `pkg install cmake` (or `clang`, `rust`, `ffmpeg`, …) and the app fetches and installs it in the background.
+- The real Termux `pkg` command: `pkg install`, `pkg remove`, `pkg upgrade`, `pkg list-installed`, `pkg search`, `pkg files`.
+- Anything else from the Termux repository can be added on demand from the chat: `pkg install clang` (which brings `gcc`, `g++` and `cc`), `rust`, `go`, `ffmpeg`, `cmake`… The app fetches it in the background and it is ready for the next command.
 - The tools run inside the same sandbox as the agent, under `/data/data/com.termux/files/usr`.
 
 ## Known limitations
