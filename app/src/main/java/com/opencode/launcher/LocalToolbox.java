@@ -610,6 +610,68 @@ public final class LocalToolbox {
                 + "  -H \"X-OpenCode-Token: $TOK\" --data-urlencode \"cmd=$*\" \\\n"
                 + "  \"http://127.0.0.1:$PORT/root\"\n";
         writeScript(root, rootBody);
+
+        // El su del rootfs (util-linux) no puede elevar dentro de proot y
+        // confunde al agente. Lo sustituimos por un envoltorio del su real.
+        File su = new File(bin, "su");
+        try {
+            java.nio.file.Files.deleteIfExists(su.toPath());
+        } catch (Exception ignored) {
+        }
+        String suBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
+                + "# su del sandbox: usa el su real de la app (Magisk).\n"
+                + "while [ $# -gt 0 ]; do\n"
+                + "  case \"$1\" in\n"
+                + "    -c) shift ;;\n"
+                + "    -s|-t|-g|-G|-Z) shift; [ $# -gt 0 ] && shift ;;\n"
+                + "    -*) shift ;;\n"
+                + "    0|root) shift ;;\n"
+                + "    *) break ;;\n"
+                + "  esac\n"
+                + "done\n"
+                + "CMD=\"\"\n"
+                + "for a in \"$@\"; do CMD=\"$CMD$a \"; done\n"
+                + "exec /data/data/com.termux/files/usr/bin/opencode-root $CMD\n";
+        writeScript(su, suBody);
+
+        writeAgentNotes(ctx);
+    }
+
+    /** Notas para el agente: root, API del telefono y bateria. */
+    private static void writeAgentNotes(Context ctx) {
+        File dir = new File(ctx.getFilesDir(), "home/.config/opencode");
+        if (!dir.isDirectory() && !dir.mkdirs()) return;
+        File f = new File(dir, "AGENTS.md");
+        String body = "# This phone (OpenCode on Android)\n"
+                + "\n"
+                + "You run inside a Termux-like sandbox owned by the OpenCode app.\n"
+                + "\n"
+                + "## Root\n"
+                + "The phone has root through Magisk. Use:\n"
+                + "\n"
+                + "    opencode-root <command>\n"
+                + "\n"
+                + "`su` is a wrapper for the same thing, so `su -c \"<command>\"` also\n"
+                + "works. The app asks for superuser permission once. If a command\n"
+                + "returns `{\"ok\":false,\"error\":\"sin permiso de su\"}`, tell the user\n"
+                + "to accept the Magisk prompt or enable Root (su) in Options.\n"
+                + "\n"
+                + "## Phone API\n"
+                + "termux-battery-status, termux-clipboard-get, termux-clipboard-set,\n"
+                + "termux-toast, termux-vibrate, termux-brightness, termux-volume,\n"
+                + "termux-wifi-connectioninfo, termux-sensor and termux-sensor-list talk\n"
+                + "to the phone app.\n"
+                + "\n"
+                + "## Battery\n"
+                + "Cycle count (when the kernel exposes it) needs root:\n"
+                + "\n"
+                + "    opencode-root cat /sys/class/power_supply/battery/cycle_count\n"
+                + "\n"
+                + "termux-battery-status includes `cycle_count` when root is granted.\n";
+        try (java.io.FileWriter w = new java.io.FileWriter(f, false)) {
+            w.write(body);
+        } catch (IOException ignored) {
+        }
     }
 
     private static void writeScript(File f, String body) {

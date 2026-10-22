@@ -115,6 +115,15 @@ public final class DeviceApi {
         o.put("technology", i.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY));
         o.put("health", i.getIntExtra(BatteryManager.EXTRA_HEALTH, -1));
         o.put("plugged", i.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1));
+        // Ciclos de carga: solo el kernel los sabe y normalmente piden root.
+        try {
+            if ("on".equals(RootShell.state(ctx))) {
+                String c = RootShell.run(ctx,
+                        "cat /sys/class/power_supply/battery/cycle_count", 5000);
+                if (c != null && c.matches("\\d+")) o.put("cycle_count", Integer.parseInt(c));
+            }
+        } catch (Exception ignored) {
+        }
         return o.toString();
     }
 
