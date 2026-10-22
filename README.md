@@ -7,11 +7,13 @@
 > changes that: the app ships the opencode binary and the whole Termux
 > toolchain, and runs the agent on its own — **no Termux, no root, no setup**.
 >
-> - The server starts by itself when you open the app, and you land straight in the chat.
+> - The app **is** the chat: open it and the server starts by itself, with the
+>   splash showing until it answers. There is no home panel any more.
 > - `git`, `python3` + `pip3`, `node`, `ssh`, `make`, `curl`, `wget` and the real `apt`/`dpkg`/`pkg` are already installed — and `pkg install <anything>` works for the rest of the Termux catalogue.
+> - The agent can also read the phone: battery, clipboard, sensors, wifi, brightness, volume, toasts and vibration.
 > - Tapping the opencode update notification installs the official binary in place, with checksum verification and automatic rollback.
 >
-> **[Download the beta](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.3)** ·
+> **[Download the beta](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.5)** ·
 > arm64 only, Android 8+ · installs as a separate app, next to this one.
 >
 > The stable 4.0 release will follow. Nothing changes for current users until then.
@@ -135,15 +137,23 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 
 See the [Next beta notice at the top](#opencode-android) for the short version.
 
-`v4.0.0-beta.3` is the first **Next** build with a real package manager inside the
+`v4.0.0-beta.5` is the first **Next** build with a real package manager inside the
 app: opencode runs inside the app (proot, no Termux, no root), the app starts the
 server by itself and lands straight in the chat, the Termux toolchain is already
 installed, and tapping the opencode update notification downloads, verifies and
 installs the official binary in place.
 
 - Package: `com.opencode.launcher.next` (it installs next to the current app).
-- Download: [OpenCodeAndroid-v4.0.0-beta.3.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.3) from the pre-release page.
+- Download: [OpenCodeAndroid-v4.0.0-beta.5.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.5) from the pre-release page.
 - arm64 only, Android 8+, ~125 MB to download and ~200 MB more once the toolbox is unpacked.
+
+### Where the controls are
+
+There is no home panel in the Next build: the app opens straight into the chat.
+Everything that used to live in the panel is in the **controls menu** (the
+floating button in the bottom right corner): log, restart server, stop server,
+update opencode, check for a new app version, auto-approve toggle, options,
+usage and report a problem.
 
 ### The toolbox
 

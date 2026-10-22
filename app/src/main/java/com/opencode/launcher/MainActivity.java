@@ -332,7 +332,7 @@ public class MainActivity extends AppCompatActivity {
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                if (fullscreen) setFullscreen(false);
+                if (fullscreen && !chatOnly()) setFullscreen(false);
                 else if (web.canGoBack()) web.goBack();
                 else {
                     setEnabled(false);
@@ -713,7 +713,7 @@ public class MainActivity extends AppCompatActivity {
             progress.setVisibility(View.VISIBLE);
             txtStatus.setText(T("Actualizando opencode… 00:00", "Updating opencode… 00:00"));
             log("Actualizando opencode en Termux (backup + installer, tarda minutos)...");
-            setFullscreen(false);
+            if (!chatOnly()) setFullscreen(false);
             startProgressPoll();
             try {
                 com.google.android.material.snackbar.Snackbar.make(web,
@@ -779,8 +779,8 @@ public class MainActivity extends AppCompatActivity {
                             ? "\nSIGUE ABIERTO: mira el holder arriba. En Termux: pkill -9 -f opencode"
                             : "\nOK detenido"));
                     snack(open ? T("Sigue abierto, mira el registro", "Still open, check the log") : T("Servidor detenido", "Server stopped"));
-                    // Si se detuvo desde el chat, volver al panel (ahi esta Iniciar).
-                    if (!open) setFullscreen(false);
+            // Si se detuvo desde el chat, volver al panel (ahi esta Iniciar).
+            if (!open && !chatOnly()) setFullscreen(false);
                     if (!open) {
                         // Parado a mano: el vigía no toca nada hasta el próximo arranque.
                         getSharedPreferences("app", MODE_PRIVATE).edit()
@@ -3208,10 +3208,15 @@ public class MainActivity extends AppCompatActivity {
      */
     private void showControlsMenu(View anchor) {
         android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
-        menu.getMenu().add(0, 0, 0, serverOpen ? T("Servidor abierto", "Server open") : T("Servidor detenido", "Server stopped"))
-                .setIcon(serverOpen ? R.drawable.dot_green : R.drawable.dot_red);
+        if (!chatOnly()) {
+            // El panel inicial solo existe en la linea con Termux.
+            menu.getMenu().add(0, 0, 0, serverOpen ? T("Servidor abierto", "Server open")
+                    : T("Servidor detenido", "Server stopped"))
+                    .setIcon(serverOpen ? R.drawable.dot_green : R.drawable.dot_red);
+            menu.getMenu().add(0, 2, 2, T("Panel de controles", "Controls panel"))
+                    .setIcon(android.R.drawable.ic_menu_manage);
+        }
         menu.getMenu().add(0, 1, 1, T("Registro", "Log")).setIcon(android.R.drawable.ic_menu_info_details);
-        menu.getMenu().add(0, 2, 2, T("Panel de controles", "Controls panel")).setIcon(android.R.drawable.ic_menu_manage);
         menu.getMenu().add(0, 3, 3, T("Reiniciar servidor", "Restart server")).setIcon(android.R.drawable.ic_popup_sync);
         menu.getMenu().add(0, 4, 4, T("Detener servidor", "Stop server")).setIcon(android.R.drawable.ic_menu_close_clear_cancel);
         if (updatePending && updateInstallable)
@@ -4189,6 +4194,11 @@ public class MainActivity extends AppCompatActivity {
             log("No se pudo abrir el instalador: " + e.getMessage());
             snack(T("Fallo el instalador, mira el registro", "Installer failed, check the log"));
         }
+    }
+
+    /** Linea Next: el agente va embebido y la app es solo el chat (sin panel). */
+    private boolean chatOnly() {
+        return LocalRuntime.available(this);
     }
 
     private void setFullscreen(boolean full) {
