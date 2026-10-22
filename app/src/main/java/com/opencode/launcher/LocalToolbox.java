@@ -634,6 +634,44 @@ public final class LocalToolbox {
                 + "exec /data/data/com.termux/files/usr/bin/opencode-root $CMD\n";
         writeScript(su, suBody);
 
+        // Binarios de Android que cargan librerias del sistema: el
+        // LD_LIBRARY_PATH del prefijo los rompe (libunwindstack/libzstd).
+        // Se envuelven para limpiar el entorno; no se pisan los que ya
+        // existen en el prefijo (settings, pm, getprop, ...).
+        String[] sysCmds = {
+                "appops", "content", "dumpsys", "input", "monkey", "screencap",
+                "svc", "uiautomator", "wm", "ip", "ss", "ifconfig", "netstat",
+                "mount"
+        };
+        for (String c : sysCmds) {
+            File f = new File(bin, c);
+            if (f.exists()) continue;
+            if (!new File("/system/bin", c).exists()) continue;
+            String body = "#!/data/data/com.termux/files/usr/bin/sh\n"
+                    + "unset LD_LIBRARY_PATH LD_PRELOAD\n"
+                    + "PATH=/system/bin exec /system/bin/" + c + " \"$@\"\n";
+            writeScript(f, body);
+        }
+
+        // sudo no existe en Android; se manda al mismo su de la app.
+        File sudo = new File(bin, "sudo");
+        if (!sudo.exists()) {
+            String sudoBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
+                    + "# sudo del sandbox: usa el su real de la app (Magisk).\n"
+                    + "while [ $# -gt 0 ]; do\n"
+                    + "  case \"$1\" in\n"
+                    + "    -E|-H|-n|-S) shift ;;\n"
+                    + "    -u) shift; [ $# -gt 0 ] && shift ;;\n"
+                    + "    -*) shift ;;\n"
+                    + "    *) break ;;\n"
+                    + "  esac\n"
+                    + "done\n"
+                    + "CMD=\"\"\n"
+                    + "for a in \"$@\"; do CMD=\"$CMD$a \"; done\n"
+                    + "exec /data/data/com.termux/files/usr/bin/opencode-root $CMD\n";
+            writeScript(sudo, sudoBody);
+        }
+
         writeAgentNotes(ctx);
     }
 
@@ -655,6 +693,20 @@ public final class LocalToolbox {
                 + "works. The app asks for superuser permission once. If a command\n"
                 + "returns `{\"ok\":false,\"error\":\"sin permiso de su\"}`, tell the user\n"
                 + "to accept the Magisk prompt or enable Root (su) in Options.\n"
+                + "\n"
+                + "`sudo <command>` also works and uses the same root.\n"
+                + "\n"
+                + "## Android commands\n"
+                + "am, pm, settings, getprop, logcat, dumpsys, input, wm, svc,\n"
+                + "screencap, uiautomator, appops, ip, ss and mount run the real\n"
+                + "Android tools (the sandbox wraps them so its libraries do not\n"
+                + "break them). Many still need root: if you see SecurityException,\n"
+                + "Permission denied or Accessed denied, retry with opencode-root.\n"
+                + "\n"
+                + "/sdcard and /storage are readable and writable.\n"
+                + "\n"
+                + "Not available on purpose: SMS, contacts, calls, camera,\n"
+                + "microphone, location, notifications, TTS and fingerprint.\n"
                 + "\n"
                 + "## Phone API\n"
                 + "termux-battery-status, termux-clipboard-get, termux-clipboard-set,\n"
