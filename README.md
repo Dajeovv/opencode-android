@@ -165,8 +165,6 @@ one doing the work:
 ```
 termux-battery-status        # nivel, carga, temperatura, voltaje
 termux-clipboard-get|set     # portapapeles
-termux-tts-speak "hola"      # voz (TextToSpeech)
-termux-tts-engines           # motores de voz disponibles
 termux-toast "guardado"      # aviso en pantalla
 termux-vibrate 200           # vibración
 termux-brightness            # brillo de pantalla

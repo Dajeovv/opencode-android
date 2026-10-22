@@ -584,8 +584,6 @@ public final class LocalToolbox {
                 {"termux-battery-status", "battery"},
                 {"termux-clipboard-get", "clipboard-get"},
                 {"termux-clipboard-set", "clipboard-set"},
-                {"termux-tts-speak", "tts-speak"},
-                {"termux-tts-engines", "tts-engines"},
                 {"termux-toast", "toast"},
                 {"termux-vibrate", "vibrate"},
                 {"termux-brightness", "brightness"},

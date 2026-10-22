@@ -143,8 +143,6 @@ public class ToolboxService extends Service {
                 "termux-sensor-list | head -c 120",
                 "termux-clipboard-set 'texto de prueba'",
                 "termux-clipboard-get",
-                "termux-tts-speak 'hola' | head -c 120",
-                "termux-tts-engines | head -c 150",
                 "termux-brightness",
                 "termux-volume",
                 "termux-sensor accelerometer | head -c 150",

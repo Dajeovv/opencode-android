@@ -20,7 +20,6 @@ import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
-import android.speech.tts.TextToSpeech;
 import android.widget.Toast;
 
 import org.json.JSONArray;
@@ -45,7 +44,6 @@ public final class DeviceApi {
     }
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static TextToSpeech tts;
 
     /** Ejecuta una accion. Devuelve el JSON de respuesta o null si no existe. */
     public static String run(Context ctx, String action, List<String> args) {
@@ -57,10 +55,6 @@ public final class DeviceApi {
                     return clipboardGet(ctx);
                 case "clipboard-set":
                     return clipboardSet(ctx, arg(args, 0));
-                case "tts-speak":
-                    return ttsSpeak(ctx, arg(args, 0));
-                case "tts-engines":
-                    return ttsEngines(ctx);
                 case "toast":
                     return toast(ctx, arg(args, 0));
                 case "vibrate":
@@ -163,65 +157,6 @@ public final class DeviceApi {
             return err(String.valueOf(e.getMessage()));
         }
         return o.toString();
-    }
-
-    // ---------------------------------------------------------------- voz
-
-    private static synchronized TextToSpeech tts(Context ctx) {
-        if (tts == null) {
-            tts = new TextToSpeech(ctx.getApplicationContext(), status -> {
-                if (status == TextToSpeech.SUCCESS) {
-                    try {
-                        tts.setLanguage(Locale.getDefault());
-                    } catch (Exception ignored) {
-                    }
-                }
-            });
-        }
-        return tts;
-    }
-
-    private static String ttsSpeak(Context ctx, String text) throws Exception {
-        JSONObject o = new JSONObject();
-        TextToSpeech t = tts(ctx);
-        if (t == null) {
-            o.put("error", "no tts");
-            return o.toString();
-        }
-        if (text == null || text.isEmpty()) {
-            o.put("error", "no text");
-            return o.toString();
-        }
-        // El motor puede tardar en iniciarse: se espera un poco la primera vez.
-        for (int i = 0; i < 20 && t.isLanguageAvailable(Locale.getDefault()) < 0; i++) {
-            Thread.sleep(150);
-        }
-        int lang = t.setLanguage(Locale.getDefault());
-        int r = t.speak(text, TextToSpeech.QUEUE_ADD, null,
-                "opencode-" + System.currentTimeMillis());
-        o.put("status", r == TextToSpeech.SUCCESS ? "speaking" : "error");
-        o.put("engine", t.getDefaultEngine());
-        o.put("language", lang >= 0 ? Locale.getDefault().toString() : "unsupported");
-        return o.toString();
-    }
-
-    private static String ttsEngines(Context ctx) throws Exception {
-        JSONArray arr = new JSONArray();
-        try {
-            TextToSpeech t = tts(ctx);
-            for (TextToSpeech.EngineInfo info : t.getEngines()) {
-                JSONObject o = new JSONObject();
-                o.put("name", info.name);
-                o.put("label", info.label);
-                arr.put(o);
-            }
-        } catch (Exception ignored) {
-        }
-        try {
-            return new JSONObject().put("engines", arr).toString();
-        } catch (Exception e) {
-            return "{\"error\":\"json\"}";
-        }
     }
 
     // -------------------------------------------------------------- avisos
