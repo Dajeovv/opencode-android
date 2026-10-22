@@ -136,7 +136,20 @@ public class ToolboxService extends Service {
                 "apt-get --version | head -1",
                 "dpkg -l | tail -1",
                 "apt-cache policy git | head -3",
-                "pkg list-installed 2>&1 | tail -1"
+                "pkg list-installed 2>&1 | tail -1",
+                "termux-battery-status | head -c 120",
+                "termux-clipboard-get",
+                "termux-wifi-connectioninfo | head -c 120",
+                "termux-sensor-list | head -c 120",
+                "termux-clipboard-set 'texto de prueba'",
+                "termux-clipboard-get",
+                "termux-tts-speak 'hola' | head -c 120",
+                "termux-tts-engines | head -c 150",
+                "termux-brightness",
+                "termux-volume",
+                "termux-sensor accelerometer | head -c 150",
+                "termux-toast 'hola desde opencode'",
+                "termux-vibrate 200"
         };
         for (String c : cmds) {
             String out = LocalRuntime.runInSandbox(ctx, c, 30000);

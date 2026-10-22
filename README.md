@@ -156,6 +156,30 @@ by itself the first time it runs — no extra step, no second app:
 - Anything else from the Termux repository can be added on demand from the chat: `pkg install clang` (which brings `gcc`, `g++` and `cc`), `rust`, `go`, `ffmpeg`, `cmake`… The app fetches it in the background and it is ready for the next command.
 - The tools run inside the same sandbox as the agent, under `/data/data/com.termux/files/usr`.
 
+### Device commands
+
+The app also exposes the phone to the agent with the same command names as
+Termux:API — but without the extra companion app, because the app itself is the
+one doing the work:
+
+```
+termux-battery-status        # nivel, carga, temperatura, voltaje
+termux-clipboard-get|set     # portapapeles
+termux-tts-speak "hola"      # voz (TextToSpeech)
+termux-tts-engines           # motores de voz disponibles
+termux-toast "guardado"      # aviso en pantalla
+termux-vibrate 200           # vibración
+termux-brightness            # brillo de pantalla
+termux-volume [stream] [v]   # volumen
+termux-wifi-connectioninfo   # red activa
+termux-sensor-list           # sensores del dispositivo
+termux-sensor accelerometer  # una muestra de los sensores
+```
+
+They answer with JSON, exactly like their Termux:API counterparts. Only
+permissions that are harmless are exposed on purpose: SMS, contacts, camera,
+microphone, location, the notification shade and the fingerprint are left out.
+
 ### How it works
 
 - The opencode binary is embedded in the APK and executed under **proot**, with no

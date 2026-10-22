@@ -77,8 +77,13 @@ public final class ToolboxServer {
             String path = parts.length > 1 ? parts[1] : "/";
             int contentLength = 0;
             String body = "";
+            Map<String, String> headers = new HashMap<>();
             String h;
             while ((h = r.readLine()) != null && !h.isEmpty()) {
+                int colon = h.indexOf(':');
+                if (colon <= 0) continue;
+                headers.put(h.substring(0, colon).trim().toLowerCase(java.util.Locale.US),
+                        h.substring(colon + 1).trim());
                 if (h.toLowerCase(java.util.Locale.US).startsWith("content-length:")) {
                     try {
                         contentLength = Integer.parseInt(h.substring(15).trim());
@@ -96,7 +101,7 @@ public final class ToolboxServer {
                 }
                 body = new String(buf, 0, off);
             }
-            String json = respond(path, body);
+            String json = respond(path, body, headers);
             byte[] out = ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                     + "Content-Length: " + json.getBytes(StandardCharsets.UTF_8).length
                     + "\r\nConnection: close\r\n\r\n" + json).getBytes(StandardCharsets.UTF_8);
@@ -108,10 +113,24 @@ public final class ToolboxServer {
         }
     }
 
-    private static String respond(String path, String body) {
+    private static String respond(String path, String body, Map<String, String> headers) {
         Context ctx = appContext;
         if (ctx == null) return "{\"ok\":false,\"error\":\"no app\"}";
         Map<String, String> q = parseQuery(body);
+        // API del dispositivo: los argumentos vienen en cabeceras.
+        if (path.startsWith("/device/")) {
+            String action = path.substring("/device/".length());
+            if (!authorized(ctx, q, headers)) return "{\"ok\":false,\"error\":\"denied\"}";
+            List<String> args = new ArrayList<>();
+            for (int i = 1; i < 32; i++) {
+                String v = headers.get("x-opencode-arg-" + i);
+                if (v == null) break;
+                args.add(v);
+            }
+            String out = DeviceApi.run(ctx, action, args);
+            if (out == null) return "{\"ok\":false,\"error\":\"unknown action\"}";
+            return out;
+        }
         if (path.startsWith("/status")) {
             StringBuilder sb = new StringBuilder("{\"ok\":true,\"installed\":[");
             List<String> list = LocalToolbox.installedPackages(ctx);
@@ -124,14 +143,14 @@ public final class ToolboxServer {
         // Ejecutar un comando en el sandbox: pide el token, que solo existe
         // dentro del sandbox (variable OPENCODE_TOOLBOX_TOKEN).
         if (path.startsWith("/run")) {
-            if (!authorized(ctx, q)) return "{\"ok\":false,\"error\":\"denied\"}";
+            if (!authorized(ctx, q, headers)) return "{\"ok\":false,\"error\":\"denied\"}";
             String cmd = urlDecode(q.getOrDefault("cmd", "")).trim();
             if (cmd.isEmpty()) return "{\"ok\":false,\"error\":\"no cmd\"}";
             String out = LocalRuntime.runInSandbox(ctx, cmd, 60000);
             return "{\"ok\":true,\"out\":" + jsonString(out) + "}";
         }
         if (path.startsWith("/install")) {
-            if (!authorized(ctx, q)) return "{\"ok\":false,\"error\":\"denied\"}";
+            if (!authorized(ctx, q, headers)) return "{\"ok\":false,\"error\":\"denied\"}";
             List<String> names = new ArrayList<>();
             for (String n : urlDecode(q.getOrDefault("pkgs", "")).split("[\\s,]+")) {
                 if (n.isEmpty()) continue;
@@ -158,9 +177,13 @@ public final class ToolboxServer {
     }
 
     /** El token es la contraseña del servidor local: solo la sabe el sandbox. */
-    private static boolean authorized(Context ctx, Map<String, String> q) {
+    private static boolean authorized(Context ctx, Map<String, String> q,
+            Map<String, String> headers) {
         String token = LocalRuntime.serverPassword(ctx);
-        return token != null && token.equals(q.get("token"));
+        if (token == null) return false;
+        String t = q.get("token");
+        if (t == null && headers != null) t = headers.get("x-opencode-token");
+        return token.equals(t);
     }
 
     private static String urlDecode(String s) {

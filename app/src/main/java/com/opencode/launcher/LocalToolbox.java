@@ -542,9 +542,73 @@ public final class LocalToolbox {
     /** Reescribe el shim "pkg" (por si ha cambiado la forma de hablar). */
     public static void refreshShim(Context ctx) {
         try {
-            if (installed(ctx)) writePkgShim(ctx, prefix(ctx));
+            if (installed(ctx)) {
+                writePkgShim(ctx, prefix(ctx));
+                writeDeviceScripts(ctx, prefix(ctx));
+            }
         } catch (Exception ignored) {
         }
+    }
+
+    /**
+     * Comandos de dispositivo al estilo Termux:API (bateria, portapapeles, voz,
+     * avisos, vibracion, brillo, volumen, red, sensores). Cada script llama a la
+     * app por HTTP; la app hace la accion con sus permisos.
+     */
+    private static void writeDeviceScripts(Context ctx, File pref) {
+        File bin = new File(pref, "bin");
+        if (!bin.isDirectory() && !bin.mkdirs()) return;
+        File libexec = new File(pref, "libexec");
+        if (!libexec.isDirectory() && !libexec.mkdirs()) return;
+
+        File client = new File(libexec, "opencode-api");
+        String clientBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
+                + "# Cliente de la API del dispositivo de OpenCode (mismo uso que\n"
+                + "# el termux-api de Termux, pero contra esta app).\n"
+                + "EP=$1; shift\n"
+                + "PORT=${OPENCODE_TOOLBOX_PORT:-" + ToolboxServer.PORT + "}\n"
+                + "TOK=$OPENCODE_TOOLBOX_TOKEN\n"
+                + "set -- \"$@\"\n"
+                + "nargs=$#\n"
+                + "i=0\n"
+                + "while [ $i -lt $nargs ]; do\n"
+                + "  A=\"$1\"; shift; i=$((i+1))\n"
+                + "  set -- \"$@\" -H \"X-OpenCode-Arg-$i: $A\"\n"
+                + "done\n"
+                + "exec /data/data/com.termux/files/usr/bin/curl -s -X POST \\\n"
+                + "  -H \"X-OpenCode-Token: $TOK\" \"$@\" \\\n"
+                + "  \"http://127.0.0.1:$PORT/device/$EP\"\n";
+        writeScript(client, clientBody);
+
+        String[][] cmds = {
+                {"termux-battery-status", "battery"},
+                {"termux-clipboard-get", "clipboard-get"},
+                {"termux-clipboard-set", "clipboard-set"},
+                {"termux-tts-speak", "tts-speak"},
+                {"termux-tts-engines", "tts-engines"},
+                {"termux-toast", "toast"},
+                {"termux-vibrate", "vibrate"},
+                {"termux-brightness", "brightness"},
+                {"termux-volume", "volume"},
+                {"termux-wifi-connectioninfo", "wifi-info"},
+                {"termux-sensor", "sensor"},
+                {"termux-sensor-list", "sensor-list"}
+        };
+        for (String[] c : cmds) {
+            File f = new File(bin, c[0]);
+            String body = "#!/data/data/com.termux/files/usr/bin/sh\n"
+                    + "exec /data/data/com.termux/files/usr/libexec/opencode-api " + c[1]
+                    + " \"$@\"\n";
+            writeScript(f, body);
+        }
+    }
+
+    private static void writeScript(File f, String body) {
+        try (java.io.FileWriter w = new java.io.FileWriter(f, false)) {
+            w.write(body);
+        } catch (IOException ignored) {
+        }
+        f.setExecutable(true, true);
     }
 
     /** Shim "pkg" de respaldo: solo si no esta el de verdad de Termux. */
