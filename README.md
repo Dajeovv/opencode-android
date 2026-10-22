@@ -13,7 +13,7 @@
 > - The agent can also read the phone: battery, clipboard, sensors, wifi, brightness, volume, toasts and vibration.
 > - Tapping the opencode update notification installs the official binary in place, with checksum verification and automatic rollback.
 >
-> **[Download the beta](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.5)** ·
+> **[Download the beta](https://github.com/Dajeovv/opencode-android/releases)** ·
 > arm64 only, Android 8+ · installs as a separate app, next to this one.
 >
 > The stable 4.0 release will follow. Nothing changes for current users until then.
@@ -144,7 +144,7 @@ installed, and tapping the opencode update notification downloads, verifies and
 installs the official binary in place.
 
 - Package: `com.opencode.launcher.next` (it installs next to the current app).
-- Download: [OpenCodeAndroid-v4.0.0-beta.5.apk](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.0-beta.5) from the pre-release page.
+- Download: [OpenCode Android releases](https://github.com/Dajeovv/opencode-android/releases) (grab the newest pre-release APK).
 - arm64 only, Android 8+, ~125 MB to download and ~200 MB more once the toolbox is unpacked.
 
 ### Where the controls are
