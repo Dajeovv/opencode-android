@@ -18,10 +18,12 @@ public final class RootShell {
     private static final String TAG = "OpenCodeRoot";
     private static final String[] PATHS = {
             "/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su",
-            "/apex/com.android.sbin/su"
+            "/product/bin/su", "/system_ext/bin/su", "/vendor/bin/su",
+            "/debug_ramdisk/su", "/apex/com.android.sbin/su"
     };
 
     private static volatile Boolean granted;
+    private static volatile String resolved;
 
     private RootShell() {
     }
@@ -51,8 +53,36 @@ public final class RootShell {
         return null;
     }
 
+    /** Resuelve "su" con el PATH del proceso de la app (Magisk lo pone ahi). */
+    private static synchronized String resolveSu() {
+        if (resolved != null) return resolved.isEmpty() ? null : resolved;
+        resolved = "";
+        try {
+            Process p = new ProcessBuilder("/system/bin/sh", "-c", "command -v su")
+                    .redirectErrorStream(true).start();
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String l;
+                while ((l = r.readLine()) != null) sb.append(l);
+            }
+            p.waitFor(3, TimeUnit.SECONDS);
+            String out = sb.toString().trim();
+            if (out.startsWith("/")) resolved = out;
+            if (resolved.isEmpty()) Log.i(TAG, "sin su en PATH");
+        } catch (Exception e) {
+            Log.w(TAG, "resolveSu: " + e);
+        }
+        return resolved.isEmpty() ? null : resolved;
+    }
+
     public static boolean available() {
-        return suPath() != null;
+        return suPath() != null || resolveSu() != null;
+    }
+
+    private static String suCmd() {
+        String p = suPath();
+        return p != null ? p : (resolveSu() != null ? resolved : "su");
     }
 
     /** Estado sin pedir nada: no | off | idle | on | denied. */
@@ -91,7 +121,7 @@ public final class RootShell {
     }
 
     private static String runSu(String cmd, int timeoutMs) {
-        String su = suPath();
+        String su = suCmd();
         if (su == null) return null;
         Process p = null;
         try {

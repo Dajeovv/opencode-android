@@ -10,7 +10,7 @@ android {
         applicationId "com.opencode.launcher"
         minSdk 26
         targetSdk 34
-        versionCode 165
+        versionCode 166
         versionName "4.0.0"
         buildConfigField "int", "SERVER_PORT", "4096"
         // Version del binario empaquetado en jniLibs. Actualizarla al cambiarlo.
@@ -21,7 +21,7 @@ android {
     }
 
     // Firma release: lee keystore.properties (no versionado). Sin ese fichero,
-    // el debug compila igual; el release pedirá el keystore.
+    // el debug compila igual; el release pedirÃ¡ el keystore.
     def keystoreProps = new Properties()
     def keystoreFile = rootProject.file("keystore.properties")
     if (keystoreFile.exists()) keystoreProps.load(new FileInputStream(keystoreFile))
@@ -52,7 +52,7 @@ android {
             initWith release
             matchingFallbacks = ['release']
             applicationIdSuffix ".next"
-            versionNameSuffix "-beta.6"
+            versionNameSuffix "-beta.7"
             buildConfigField "int", "SERVER_PORT", "4098"
             signingConfig signingConfigs.release
         }
