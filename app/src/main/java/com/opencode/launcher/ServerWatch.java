@@ -79,56 +79,15 @@ public class ServerWatch {
             return false;
         }
     }
-
-    static boolean rooted() {
-        try {
-            return RootUtil.isRooted(RootUtil.requestRoot());
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    /** Arranca el servidor sin UI (boot o vigía). Respeta root/sin-root y el
-     *  interruptor permisos-auto. No espera al HTTP: quien llama decide. */
+    /** Arranca el servidor sin UI (boot o vigia) con el runtime embebido. */
     public static String startHeadless(Context ctx) {
-        StringBuilder t = new StringBuilder();
-        boolean allow;
+        if (!LocalRuntime.available(ctx)) return "sin-runtime";
         try {
-            allow = p(ctx).getBoolean("auto_perm", true);
+            LocalServerService.start(ctx);
+            return "local";
         } catch (Exception e) {
-            allow = true;
+            return "local-fallo:" + e.getMessage();
         }
-        if (LocalRuntime.available(ctx)) {
-            try {
-                LocalServerService.start(ctx);
-                return "local";
-            } catch (Exception e) {
-                return "local-fallo:" + e.getMessage();
-            }
-        }
-        if (!TermuxRunner.isTermuxInstalled(ctx)) return "sin-termux";
-        boolean root = rooted();
-        t.append(root ? "root" : "noroot").append(";");
-        try {
-            if (root) {
-                // Despierta Termux primero (nsenter exige proceso vivo),
-                // luego merge sincrono, luego serve.
-                t.append(RootUtil.pingTermux().split("\n")[0]).append(";");
-                Thread.sleep(9000);
-                t.append(RootUtil.applyPermSync(allow).split("\n")[0]).append(";");
-                t.append(RootUtil.startViaSuForeground().split("\n")[0]).append(";");
-            } else {
-                t.append(TermuxRunner.repairViaService(ctx)).append(";");
-                t.append(TermuxRunner.applyPermViaService(ctx, allow)).append(";");
-                Thread.sleep(2500);
-                t.append(TermuxRunner.startViaService(ctx)).append(";");
-            }
-        } catch (InterruptedException e) {
-            t.append("interrumpido;");
-        } catch (Exception e) {
-            t.append("fallo:").append(String.valueOf(e.getMessage()));
-        }
-        return t.toString();
     }
 
     static PendingIntent wdIntent(Context ctx) {

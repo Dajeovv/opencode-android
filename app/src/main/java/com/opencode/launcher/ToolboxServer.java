@@ -138,7 +138,20 @@ public final class ToolboxServer {
                 if (i > 0) sb.append(',');
                 sb.append('"').append(list.get(i)).append('"');
             }
-            return sb.append("]}").toString();
+            sb.append("],\"root\":\"").append(RootShell.state(ctx)).append('"');
+            return sb.append('}').toString();
+        }
+        // Comandos como root con el su del sistema (el agente usa este endpoint
+        // a traves del script "opencode-root" del sandbox).
+        if (path.startsWith("/root")) {
+            if (!authorized(ctx, q, headers)) return "{\"ok\":false,\"error\":\"denied\"}";
+            if (!RootShell.enabled(ctx)) return "{\"ok\":false,\"error\":\"root off\"}";
+            if (!RootShell.available()) return "{\"ok\":false,\"error\":\"no su\"}";
+            String cmd = urlDecode(q.getOrDefault("cmd", "")).trim();
+            if (cmd.isEmpty()) return "{\"ok\":false,\"error\":\"no cmd\"}";
+            String out = RootShell.run(ctx, cmd, 60000);
+            if (out == null) return "{\"ok\":false,\"error\":\"sin permiso de su\"}";
+            return "{\"ok\":true,\"out\":" + jsonString(out) + "}";
         }
         // Ejecutar un comando en el sandbox: pide el token, que solo existe
         // dentro del sandbox (variable OPENCODE_TOOLBOX_TOKEN).

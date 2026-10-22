@@ -87,7 +87,6 @@ public class MainActivity extends AppCompatActivity {
     private static final String HOST = "127.0.0.1";
     private static final int PORT = BuildConfig.SERVER_PORT;
     private static final String URL = "http://" + HOST + ":" + PORT;
-    private static final String MANUAL_CMD = "opencode serve --hostname 127.0.0.1 --port " + PORT;
     private static final long MAX_SHARE_BYTES = 50L * 1024 * 1024;
     private static final long MAX_SHARE_TOTAL_BYTES = 100L * 1024 * 1024;
     private static final int MAX_SHARE_FILES = 10;
@@ -151,17 +150,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean advancedOpen = false;
     private boolean serverOpen = false;
     /** Modo sin root: true hasta que la comprobacion de arranque diga lo contrario. */
-    private volatile boolean hasRoot = true;
-    private volatile boolean rootChecked = false;
     /** Descarga del APK de Termux (paso 1 sin root). */
-    private long termuxDownloadId = -1;
-    private BroadcastReceiver termuxDownloadReceiver = null;
-    private String termuxApkName = "termux.apk";
-    private boolean termuxInstalling = false;
-    private final android.os.Handler termuxDlHandler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
-    private Runnable termuxDlTick;
-    private int lastDlPct = -1;
     /** Avisos del agente: solo suenan si NO miras el chat. */
     private boolean appForeground = false;
     private int agentNotifId = 100;
@@ -370,26 +359,13 @@ public class MainActivity extends AppCompatActivity {
             new Handler(Looper.getMainLooper()).postDelayed(this::showShareDialog, 700);
         }
 
-        applyOnboarding();
         applyLang();
 
-        findViewById(R.id.cardStatus).setOnClickListener(v -> enterChatBlocking());
-
-        new Thread(() -> {
-            String rid = RootUtil.requestRoot();
-            boolean ok = RootUtil.isRooted(rid);
-            hasRoot = ok;
-            rootChecked = true;
-            android.util.Log.d("OC-Update", "root-check: ok=" + ok
-                    + " rid=" + (rid == null ? "null"
-                    : rid.replace("\n", "|").substring(0, Math.min(120, rid.replace("\n", "|").length()))));
-            String stab = ok ? RootUtil.stabilizeAndroid() : "sin root: modo sin root activo";
-            runOnUiThread(() -> {
-                log("Arranque auto:\n" + rid.split("\n")[0] + "\n" + stab);
-                applyOnboarding();
-                refreshStepStatus();
-            });
-        }).start();
+        // Si el movil tiene root, se pide su permiso de su al abrir (Magisk/
+        // KernelSU muestran su dialogo normal). Denegado no se vuelve a pedir.
+        if (RootShell.available() && RootShell.enabled(this)) {
+            new Thread(() -> RootShell.request(this), "su-request").start();
+        }
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -608,7 +584,6 @@ public class MainActivity extends AppCompatActivity {
         btnStart.setEnabled(false);
         btnOpen.setOnClickListener(v -> enterChatBlocking());
         MaterialButton btnClear = findViewById(R.id.btnClear);
-        MaterialButton btnTermux = findViewById(R.id.btnTermux);
 
         btnClear.setOnClickListener(v -> txtLog.setText(""));
 
@@ -628,190 +603,18 @@ public class MainActivity extends AppCompatActivity {
         // El boton va oscurecido hasta que los 5 pasos esten en verde
         // (refreshStepStatus): deshabilitado no responde al toque, sin dialogos.
         btnStart.setOnClickListener(v -> startServerSequence());
-
-        btnTermux.setOnClickListener(v -> {
-            copyManualCommand();
-            log(TermuxRunner.openTermuxApp(this)
-                    + "\nComando copiado, pegalo en Termux:\n" + MANUAL_CMD);
-            snack(T("Comando manual copiado", "Manual command copied"));
-        });
-
-        MaterialButton btnSetup = findViewById(R.id.btnSetup);
-        btnSetup.setOnClickListener(v -> copySetupAndOpenTermux());
-
-        MaterialButton btnStabilize = findViewById(R.id.btnStabilize);
-        btnStabilize.setOnClickListener(v -> {
-            setBusy(true);
-            new Thread(() -> {
-                String out = RootUtil.stabilizeAndroid();
-                runOnUiThread(() -> {
-                    setBusy(false);
-                    log("$ estabilizar Android:\n" + out
-                            + "\nAhora permite a Termux ignorar la optimizacion de bateria.");
-                    snack(T("Ajuste aplicado, abre Bateria", "Setting applied, open Battery"));
-                    requestBatteryExemption();
-                });
-            }).start();
-        });
-
-        MaterialButton btnFdroid = findViewById(R.id.btnFdroid);
-        btnFdroid.setOnClickListener(v -> showTermuxDownloadGuide());
-
-        MaterialButton btnBattery = findViewById(R.id.btnBattery);
-        btnBattery.setOnClickListener(v -> {
-            log("Pidiendo que Android no suspenda a Termux en segundo plano...");
-            requestBatteryExemption();
-        });
-
-        MaterialButton btnAppUpdate = findViewById(R.id.btnAppUpdate);
-        btnAppUpdate.setOnClickListener(v -> {
-            if (!appUpdatePending || appUpdUrl.isEmpty()) return;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                    && !getPackageManager().canRequestPackageInstalls()) {
-                log("Permite 'instalar apps desconocidas' para esta app y vuelve a pulsar Descargar.");
-                snack(T("Permite instalar apps y repite", "Allow installing apps and retry"));
-                openUnknownSourcesSettings();
-                return;
-            }
-            downloadAppUpdate(appUpdUrl, appUpdTag);
-        });
-
-        MaterialButton btnUpdate = findViewById(R.id.btnUpdate);
-        btnUpdate.setOnClickListener(v -> {
-            setBusy(true);
-            btnUpdate.setEnabled(false);
-            if (useRoot() && !hasAllFilesAccess()) {
-                log("Falta permiso de archivos: te llevo a Ajustes, activalo y pulsa Actualizar de nuevo.");
-                snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
-                try {
-                    Intent si = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            Uri.parse("package:" + getPackageName()));
-                    startActivity(si);
-                } catch (Exception e) {
-                    log("No se pudo abrir Ajustes: " + e.getMessage());
-                }
-                setBusy(false);
-                btnUpdate.setEnabled(true);
-                return;
-            }
-            // Sin doble toque: si ya hay un update en marcha, avisar y salir.
-            if (updating) {
-                snack(T("Ya se está actualizando…", "Already updating…"));
-                setBusy(false);
-                btnUpdate.setEnabled(true);
-                return;
-            }
-            updating = true;
-            updateStart = System.currentTimeMillis();
-            lastStage = -1;
-            lastMbQ = -1;
-            // UI inmediata (hilo principal): barra + estado + poll + aviso.
-            // El intent va despues en otro hilo: aunque el binder se atasque,
-            // la UI ya corre y el poll informa.
-            progress.setIndeterminate(true);
-            progress.setProgressCompat(0, false);
-            progress.setVisibility(View.VISIBLE);
-            txtStatus.setText(T("Actualizando opencode… 00:00", "Updating opencode… 00:00"));
-            log("Actualizando opencode en Termux (backup + installer, tarda minutos)...");
-            if (!chatOnly()) setFullscreen(false);
-            startProgressPoll();
-            try {
-                com.google.android.material.snackbar.Snackbar.make(web,
-                        T("Actualizando opencode, espera…", "Updating opencode, wait…"),
-                        com.google.android.material.snackbar.Snackbar.LENGTH_LONG)
-                        .setAction(T("Ver Termux", "See Termux"),
-                                vv -> TermuxRunner.openTermuxApp(this))
-                        .show();
-            } catch (Exception e) {
-                snack(T("Actualizacion lanzada", "Update launched"));
-            }
-            // El intent en hilo aparte (no bloquea la UI).
-            new Thread(() -> {
-                StringBuilder t = new StringBuilder();
-                if (useRoot()) {
-                    String r1 = RootUtil.startUpdateViaAmBg();
-                    t.append("1/2 FGS por root:\n").append(r1).append("\n");
-                    if (r1.contains("Error") || r1.contains("fallo") || r1.contains("ERROR")) {
-                        t.append("2/2 servicio directo:\n").append(TermuxRunner.startUpdateViaService(this)).append("\n");
-                    }
-                } else {
-                    t.append(TermuxRunner.startUpdateViaService(this)).append("\n");
-                }
-                String transcript = t.toString();
-                // Solo el parte del envio va diferido; el poll ya corre.
-                runOnUiThread(() -> log(transcript + "Actualizando en Termux: mira el % y el estado aqui arriba (no cierres la app)."));
-            }).start();
-        });
-
         MaterialButton btnRestart = findViewById(R.id.btnRestart);
-        btnRestart.setOnClickListener(v -> {
-            setBusy(true);
-            btnRestart.setEnabled(false);
-            log("Reiniciando servidor...");
-            new Thread(() -> {
-                String out = stopRuntime();
-                boolean gone = waitForPortGone(8000);
-                runOnUiThread(() -> {
-                    setBusy(false);
-                    btnRestart.setEnabled(true);
-                    log("$ reiniciar (fase 1 detener):\n" + out
-                            + (gone ? "\nDetenido, arrancando..." : "\nAviso: puerto seguia abierto, arranco igual..."));
-                    btnStart.performClick();
-                });
-            }).start();
-        });
+        btnRestart.setOnClickListener(v -> restartServer());
+        MaterialButton btnStop = findViewById(R.id.btnStop);
+        btnStop.setOnClickListener(v -> stopServer());
 
-        MaterialButton btnStop = findViewById(R.id.btnStop);        btnStop.setOnClickListener(v -> {
-            setBusy(true);
-            btnStop.setEnabled(false);
-            log("Deteniendo servidor (manual o de la app)...");
-            new Thread(() -> {
-                String out = stopRuntime();
-                boolean open = !waitForPortGone(6000);
-                runOnUiThread(() -> {
-                    setBusy(false);
-                    btnStop.setEnabled(true);
-                    serverOpen = open;
-                    refreshActionButtons();
-                    setDot(open);
-                    txtStatus.setText(open ? T("Servidor abierto (sigue vivo)", "Server open (still alive)") : T("Servidor detenido", "Server stopped"));
-                    log("$ detener\n" + out + (open
-                            ? "\nSIGUE ABIERTO: mira el holder arriba. En Termux: pkill -9 -f opencode"
-                            : "\nOK detenido"));
-                    snack(open ? T("Sigue abierto, mira el registro", "Still open, check the log") : T("Servidor detenido", "Server stopped"));
-            // Si se detuvo desde el chat, volver al panel (ahi esta Iniciar).
-            if (!open && !chatOnly()) setFullscreen(false);
-                    if (!open) {
-                        // Parado a mano: el vigía no toca nada hasta el próximo arranque.
-                        getSharedPreferences("app", MODE_PRIVATE).edit()
-                                .putBoolean(ServerWatch.PREF_WD_HOLD, true).apply();
-                        log(T("Vigía en pausa hasta el próximo arranque.",
-                                "Watchdog paused until next start."));
-                    }
-                    if (!open) {
-                        new Thread(() -> {
-                            String woff = useRoot() ? RootUtil.fireTermuxCmd(RootUtil.WAKE_OFF)
-                                    : TermuxRunner.wakeViaService(this, false);
-                            runOnUiThread(() -> log("wake-lock liberado."));
-                        }).start();
-                    }
-                });
-            }).start();
-        });
+
 
         log("Pulsa Iniciar y abrir. Si el servidor ya corre, entras directo al chat.");
         // El vigía sobrevive solo hasta reiniciar: rearmarlo siempre (si esta OFF no hace nada).
         ServerWatch.arm(this);
         // Chequeo diario de updates aunque la app este cerrada (solo avisa).
         ServerWatch.armUpdateCheck(this);
-        // Descarga de Termux a medias (cierre en mitad): se retoma la vigilancia.
-        long pendingDl = getSharedPreferences("app", MODE_PRIVATE).getLong("termux_dl_id", -1);
-        if (pendingDl > 0) {
-            termuxApkName = getSharedPreferences("app", MODE_PRIVATE)
-                    .getString("termux_apk", termuxApkName);
-            log("Hay una descarga de Termux pendiente, retomando...");
-            watchTermuxDownload(pendingDl);
-        }
     }
 
     @Override
@@ -839,12 +642,10 @@ public class MainActivity extends AppCompatActivity {
         web.onResume();
         web.resumeTimers();
         checkStatus(false);
-        refreshGuide();
         checkForUpdate(false);
         checkLauncherUpdate(false);
         // Al volver de Ajustes/Termux se recalculan los pasos: la tira de
         // estados y el oscurecido de Iniciar quedan al dia solos.
-        refreshStepStatus();
         // Si el usuario fue a Ajustes a dar el permiso de archivos, el arranque
         // que se quedo esperando continua solo.
         if (filesAskPending) {
@@ -866,203 +667,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Paso 1 automatico: baja de GitHub el APK de Termux para esta ABI y abre el instalador. */
-    private void downloadAndInstallTermux(String suffix) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                && !getPackageManager().canRequestPackageInstalls()) {
-            log("Permite 'instalar apps desconocidas' para esta app y vuelve a pulsar Descargar.");
-            snack(T("Permite instalar apps y repite", "Allow installing apps and retry"));
-            openUnknownSourcesSettings();
-            return;
-        }
-        setBusy(true);
-        log("Buscando el APK de Termux (" + suffix + ") en GitHub...");
-        new Thread(() -> {
-            try {
-                java.net.HttpURLConnection c = (java.net.HttpURLConnection)
-                        new java.net.URL("https://api.github.com/repos/termux/termux-app/releases/latest")
-                                .openConnection();
-                c.setRequestProperty("User-Agent", "opencode-android");
-                c.setRequestProperty("Accept", "application/vnd.github+json");
-                c.setConnectTimeout(15000);
-                c.setReadTimeout(15000);
-                StringBuilder sb = new StringBuilder();
-                try (java.io.BufferedReader br = new java.io.BufferedReader(
-                        new java.io.InputStreamReader(c.getInputStream()))) {
-                    String line;
-                    while ((line = br.readLine()) != null) sb.append(line);
-                }
-                JSONObject rel = new JSONObject(sb.toString());
-                org.json.JSONArray assets = rel.getJSONArray("assets");
-                String url = null;
-                String name = null;
-                for (int i = 0; i < assets.length(); i++) {
-                    JSONObject a = assets.getJSONObject(i);
-                    String n = a.optString("name", "");
-                    if (n.startsWith("termux-app_") && n.contains("_" + suffix + ".apk")) {
-                        name = n;
-                        url = a.optString("browser_download_url", null);
-                        break;
-                    }
-                }
-                if (url == null) {
-                    for (int i = 0; i < assets.length(); i++) {
-                        JSONObject a = assets.getJSONObject(i);
-                        String n = a.optString("name", "");
-                        if (n.startsWith("termux-app_") && n.contains("universal.apk")) {
-                            name = n;
-                            url = a.optString("browser_download_url", null);
-                            break;
-                        }
-                    }
-                }
-                if (url == null) {
-                    throw new Exception("no hay asset termux-app *_" + suffix + ".apk en "
-                            + rel.optString("tag_name", "?"));
-                }
-                termuxApkName = "termux-" + suffix + ".apk";
-                // Descarga en la carpeta privada de la app: en Download/ el
-                // fichero es del MediaProvider y sin "todos los archivos" la
-                // app no puede leerlo (el instalador daba "error al analizar
-                // el paquete"). En la privada siempre es legible.
-                java.io.File stale = new java.io.File(getExternalFilesDir("updates"), termuxApkName);
-                if (stale.exists()) stale.delete();
-                android.app.DownloadManager dm =
-                        (android.app.DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                android.app.DownloadManager.Request req =
-                        new android.app.DownloadManager.Request(Uri.parse(url));
-                req.setTitle("Termux (" + suffix + ")");
-                req.setDescription(name);
-                req.setMimeType("application/vnd.android.package-archive");
-                req.setNotificationVisibility(
-                        android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                req.setDestinationInExternalFilesDir(this, "updates", termuxApkName);
-                termuxDownloadId = dm.enqueue(req);
-                getSharedPreferences("app", MODE_PRIVATE).edit()
-                        .putString("termux_apk", termuxApkName).apply();
-                final long idF = termuxDownloadId;
-                final String nameF = name;
-                runOnUiThread(() -> {
-                    watchTermuxDownload(idF);
-                    log("Descargando " + nameF + " ...");
-                    snack(T("Descargando Termux...", "Downloading Termux..."));
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    setBusy(false);
-                    log("Descarga automatica fallo: " + e.getMessage()
-                            + "\nUsa 'Abrir GitHub' y elige el _" + suffix + ".apk a mano.");
-                    snack(T("Fallo la descarga, mira el registro", "Download failed, check the log"));
-                });
-            }
-        }).start();
-    }
-
     /** Vigila la descarga: barra con % real, reanuda tras reinicios y avisa fallos. */
-    private void watchTermuxDownload(long id) {
-        termuxDownloadId = id;
-        termuxInstalling = false;
-        getSharedPreferences("app", MODE_PRIVATE).edit().putLong("termux_dl_id", id).apply();
-        if (termuxDownloadReceiver == null) {
-            termuxDownloadReceiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context ctx, Intent intent) {
-                    long rid = intent.getLongExtra(
-                            android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                    // El aviso salta tambien si fallo: se consulta el estado
-                    // real y solo se instala si la descarga esta completa.
-                    if (rid == termuxDownloadId && termuxDlTick != null) {
-                        pollTermuxDownloadOnce();
-                    }
-                }
-            };
-            ContextCompat.registerReceiver(this, termuxDownloadReceiver,
-                    new IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-                    ContextCompat.RECEIVER_NOT_EXPORTED);
-        }
-        stopTermuxDlPoll();
-        lastDlPct = -1;
-        progress.setIndeterminate(false);
-        progress.setProgressCompat(0, false);
-        termuxDlTick = new Runnable() {
-            @Override
-            public void run() {
-                if (!pollTermuxDownloadOnce()) termuxDlHandler.postDelayed(this, 1000);
-            }
-        };
-        termuxDlHandler.post(termuxDlTick);
-    }
-
-    private void stopTermuxDlPoll() {
-        if (termuxDlTick != null) termuxDlHandler.removeCallbacks(termuxDlTick);
-        termuxDlTick = null;
-    }
-
     /** Devuelve true si la descarga termino (bien o mal). */
-    private boolean pollTermuxDownloadOnce() {
-        try {
-            android.app.DownloadManager dm =
-                    (android.app.DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            android.app.DownloadManager.Query q =
-                    new android.app.DownloadManager.Query().setFilterById(termuxDownloadId);
-            try (android.database.Cursor c = dm.query(q)) {
-                if (c == null || !c.moveToFirst()) {
-                    finishTermuxDownload("Descarga desaparecida (id ya no existe). Reintenta.");
-                    return true;
-                }
-                int status = c.getInt(c.getColumnIndex(android.app.DownloadManager.COLUMN_STATUS));
-                if (status == android.app.DownloadManager.STATUS_SUCCESSFUL) {
-                    stopTermuxDlPoll();
-                    setBusy(false);
-                    getSharedPreferences("app", MODE_PRIVATE).edit()
-                            .remove("termux_dl_id").apply();
-                    long totalSz = c.getLong(c.getColumnIndex(
-                            android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
-                    log("Descarga completa (" + mbText(totalSz) + "). Abriendo instalador...");
-                    txtStatus.setText(T("Descarga completa, confirma la instalacion",
-                            "Download complete, confirm the install"));
-                    installTermuxApk();
-                    return true;
-                }
-                if (status == android.app.DownloadManager.STATUS_FAILED) {
-                    int reason = c.getInt(c.getColumnIndex(android.app.DownloadManager.COLUMN_REASON));
-                    finishTermuxDownload("Descarga fallida: " + dlReasonText(reason));
-                    return true;
-                }
-                long sofar = c.getLong(c.getColumnIndex(
-                        android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
-                long total = c.getLong(c.getColumnIndex(
-                        android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
-                int pct = total > 0 ? (int) (sofar * 100 / total) : 0;
-                progress.setIndeterminate(false);
-                progress.setProgressCompat(pct, true);
-                String dlText = total > 0
-                        ? T("Descargando Termux: ", "Downloading Termux: ") + mbText(sofar) + " / " + mbText(total)
-                                + " (" + pct + "%)"
-                        : T("Descargando Termux: ", "Downloading Termux: ") + mbText(sofar) + " ...";
-                txtStatus.setText(dlText);
-                if (pct / 25 != lastDlPct / 25) {
-                    lastDlPct = pct;
-                    final String dlTextF = dlText;
-                    runOnUiThread(() -> log(dlTextF));
-                }
-                return false;
-            }
-        } catch (Exception e) {
-            finishTermuxDownload("No se pudo leer el progreso: " + e.getMessage());
-            return true;
-        }
-    }
-
-    private void finishTermuxDownload(String msg) {
-        stopTermuxDlPoll();
-        setBusy(false);
-        progress.setIndeterminate(true);
-        getSharedPreferences("app", MODE_PRIVATE).edit().remove("termux_dl_id").apply();
-        log(msg);
-        txtStatus.setText(T("Descarga fallida", "Download failed"));
-        snack(T("Fallo la descarga, mira el registro", "Download failed, check the log"));
-    }
-
     private String mbText(long bytes) {
         return String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0);
     }
@@ -1090,107 +696,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Abre el instalador del sistema con el APK bajado (via FileProvider). */
-    private void installTermuxApk() {
-        if (termuxInstalling) return;
-        termuxInstalling = true;        try {
-            java.io.File apk = new java.io.File(getExternalFilesDir("updates"), termuxApkName);
-            Uri uri = androidx.core.content.FileProvider.getUriForFile(
-                    this, getPackageName() + ".fileprovider", apk);
-            Intent in = new Intent(Intent.ACTION_VIEW);
-            in.setDataAndType(uri, "application/vnd.android.package-archive");
-            in.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(in);
-            log("Instalador abierto: confirma Instalar, luego abre Termux UNA vez.");
-            snack(T("Confirma la instalacion", "Confirm the install"));
-        } catch (Exception e) {
-            log("No se pudo abrir el instalador: " + e.getMessage());
-            snack(T("Fallo el instalador, mira el registro", "Installer failed, check the log"));
-        }
-    }
-
     /** Guia de descarga segun el chip del movil: cada APK de GitHub vale solo para su ABI. */
-    private void showTermuxDownloadGuide() {
-        String abi = (Build.SUPPORTED_ABIS != null && Build.SUPPORTED_ABIS.length > 0)
-                ? Build.SUPPORTED_ABIS[0] : "arm64-v8a";
-        String suffix;
-        if (abi.contains("arm64")) suffix = "arm64-v8a";
-        else if (abi.contains("x86_64")) suffix = "x86_64";
-        else if (abi.contains("x86")) suffix = "x86";
-        else suffix = "armeabi-v7a";
-        String msg = T("Tu chip es ", "Your chip is ") + abi + T(": en GitHub descarga el archivo que termina en _",
-                    ": on GitHub download the file ending in _")
-                + suffix + T(".apk (los otros no te sirven).\n\nTras instalarlo, abre Termux UNA vez",
-                    ".apk (the others will not work for you).\n\nAfter installing it, open Termux ONCE")
-                + T(" y vuelve aqui al paso 2 (Setup).", " and come back here to step 2 (Setup).");
-        final String suffixF = suffix;
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(T("Instalar Termux", "Install Termux"))
-                .setMessage(msg)
-                .setPositiveButton(T("Abrir GitHub", "Open GitHub"), (d, w) -> {
-                    try {
-                        startActivity(new Intent(Intent.ACTION_VIEW,
-                                Uri.parse("https://github.com/termux/termux-app/releases")));
-                    } catch (Exception e) {
-                        snack(T("No se pudo abrir el navegador", "Could not open the browser"));
-                    }
-                })
-                .setNeutralButton(T("Descargar e instalar", "Download and install"), (d, w) -> downloadAndInstallTermux(suffixF))
-                .setNegativeButton(T("Cerrar", "Close"), null)
-                .show();
-    }
-
     /** Paso 2 de la guia: copia el setup (instala opencode si falta) y abre Termux. */
-    private void copySetupAndOpenTermux() {
-        // El setup instala opencode si falta (con y sin root): es idempotente.
-        final String block = SETUP_NOROOT;
-        try {
-            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(ClipData.newPlainText("opencode-setup", block));
-            getSharedPreferences("app", MODE_PRIVATE).edit()
-                    .putBoolean("setup_tried", true).apply();
-            log("Setup copiado. Pegalo UNA vez en Termux y espera a que acabe;"
-                    + " luego cierra Termux del todo, reabrelo y vuelve aqui:"
-                    + " al completar los puntos, Iniciar y abrir se enciende:\n" + block);
-            snack(T("Setup copiado: pegalo en Termux", "Setup copied: paste it in Termux"));
-        } catch (Exception e) {
-            snack(T("No se pudo copiar", "Could not copy"));
-        }
-        TermuxRunner.openTermuxApp(this);
-    }
-
     /** Lleva al permiso de overlay DE TERMUX (sesiones visibles por intent).
      *  OJO: Termux sideloaded trae "ajustes restringidos" y el overlay no se deja
      *  activar hasta liberarlo en su info (menu tres puntos). Se guia en orden. */
-    private void requestTermuxOverlay() {
-        String msg = T("1) INFO DE TERMUX: toca arriba los tres puntos y elige",
-                    "1) TERMUX INFO: tap the three dots above and choose")
-                + T(" 'Permitir ajustes restringidos'.\n", " 'Allow restricted settings'.\n")
-                + T("2) AJUSTE OVERLAY: activalo.\n", "2) OVERLAY SETTING: enable it.\n")
-                + T("3) Vuelve aqui y pulsa el boton grande.", "3) Come back here and press the big button.");
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(T("Mostrar encima (Termux)", "Display over apps (Termux)"))
-                .setMessage(msg)
-                .setPositiveButton(T("Info Termux", "Termux info"), (d, w) -> {
-                    try {
-                        startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse("package:com.termux")));
-                    } catch (Exception e) {
-                        log("Abre manual: Ajustes > Apps > Termux.");
-                    }
-                })
-                .setNeutralButton(T("Ajuste overlay", "Overlay setting"), (d, w) -> {
-                    try {
-                        startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:com.termux")));
-                    } catch (Exception e) {
-                        log("Abre manual: Ajustes > Apps > Acceso especial > Mostrar sobre otras apps > Termux.");
-                    }
-                })
-                .setNegativeButton(T("Cerrar", "Close"), null)
-                .show();
-        log("Termux pide overlay: sigue los pasos del dialogo (primero ajustes restringidos).");
-    }
-
     /** Lleva a la info de ESTA app para activar "Run commands in Termux environment". */
     private void openAppInfo() {
         try {
@@ -1205,46 +715,92 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Permiso externo con UNA linea corta (solo si el automatico dice "sin permiso"). */
-    private void copyPermAndOpenTermux() {
-        final String line = "mkdir -p ~/.termux; grep -qi '^allow-external-apps *= *true'"
-                + " ~/.termux/termux.properties 2>/dev/null"
-                + " || echo 'allow-external-apps = true' >> ~/.termux/termux.properties";
-        try {
-            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(ClipData.newPlainText("opencode-perm", line));
-            log("Linea copiada. Pegala en Termux + enter, luego CIERRA Termux del todo,"
-                    + " reabrelo y vuelve aqui para pulsar el boton grande:\n" + line);
-            snack(T("Linea copiada: pegala en Termux", "Line copied: paste it in Termux"));
-        } catch (Exception e) {
-            snack(T("No se pudo copiar", "Could not copy"));
-        }
-        TermuxRunner.openTermuxApp(this);
-    }
-
     /** Pide a Android no matar a Termux (reemplazo sin root de Estabilizar). */
-    private void requestBatteryExemption() {
-        try {
-            Intent bi = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:com.termux"));
-            startActivity(bi);
-        } catch (Exception e) {
-            log("Abre manual: Ajustes > Apps > Termux > Bateria > Sin restricciones.");
-        }
-    }
-
     /** Interruptor PROPIO de permisos automaticos (el de la web de opencode no hace
      *  nada en modo serve). Por defecto SI, como lo pidio el usuario. */
     private boolean autoPerm() {
         return getSharedPreferences("app", MODE_PRIVATE).getBoolean("auto_perm", true);
     }
-
     private String stopRuntime() {
-        if (LocalRuntime.available(this)) {
-            LocalServerService.stop(this);
-            LocalRuntime.stop();
-            return "runtime local detenido";
+        LocalServerService.stop(this);
+        LocalRuntime.stop();
+        return "runtime local detenido";
+    }
+    /** Reinicia el runtime embebido: detener y volver a arrancar. */
+    private void restartServer() {
+        setBusy(true);
+        log("Reiniciando servidor...");
+        new Thread(() -> {
+            String out = stopRuntime();
+            boolean gone = waitForPortGone(8000);
+            runOnUiThread(() -> {
+                setBusy(false);
+                log("$ reiniciar (fase 1 detener):\n" + out
+                        + (gone ? "\nDetenido, arrancando..." : "\nAviso: puerto seguia abierto, arranco igual..."));
+                startServerSequence();
+            });
+        }).start();
+    }
+
+    /** Detiene el runtime embebido. */
+    private void stopServer() {
+        setBusy(true);
+        log("Deteniendo servidor...");
+        new Thread(() -> {
+            String out = stopRuntime();
+            boolean open = !waitForPortGone(6000);
+            runOnUiThread(() -> {
+                setBusy(false);
+                serverOpen = open;
+                refreshActionButtons();
+                setDot(open);
+                txtStatus.setText(open ? T("Servidor abierto (sigue vivo)", "Server open (still alive)")
+                        : T("Servidor detenido", "Server stopped"));
+                log("$ detener\n" + out + (open ? "\nSIGUE ABIERTO" : "\nOK detenido"));
+                snack(open ? T("Sigue abierto, mira el registro", "Still open, check the log")
+                        : T("Servidor detenido", "Server stopped"));
+                if (!open && !chatOnly()) setFullscreen(false);
+                if (!open) {
+                    getSharedPreferences("app", MODE_PRIVATE).edit()
+                            .putBoolean(ServerWatch.PREF_WD_HOLD, true).apply();
+                    log(T("Vigía en pausa hasta el próximo arranque.",
+                            "Watchdog paused until next start."));
+                }
+            });
+        }).start();
+    }
+
+    /** Updater oficial del runtime: descarga, verifica SHA-256, instala y reinicia. */
+    private void startRuntimeUpdate() {
+        if (updLatest.isEmpty()) return;
+        if (!hasAllFilesAccess()) {
+            snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
+            openAllFilesSettings();
+            return;
         }
-        return useRoot() ? RootUtil.stopServer() : TermuxRunner.stopViaService(this);
+        try {
+            Intent i = new Intent(this, RuntimeUpdateService.class)
+                    .setAction(RuntimeUpdateService.ACTION_INSTALL)
+                    .putExtra(RuntimeUpdateService.EXTRA_VERSION, updLatest);
+            startForegroundService(i);
+            snack(T("Actualizando opencode…", "Updating opencode…"));
+        } catch (Exception e) {
+            log("No se pudo iniciar la actualización: " + e.getMessage());
+            snack(T("No se pudo iniciar la actualización", "Could not start the update"));
+        }
+    }
+
+    /** Descarga e instala la nueva version del launcher. */
+    private void installAppUpdateNow() {
+        if (!appUpdatePending || appUpdUrl.isEmpty()) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !getPackageManager().canRequestPackageInstalls()) {
+            log("Permite 'instalar apps desconocidas' para esta app y vuelve a pulsar Descargar.");
+            snack(T("Permite instalar apps y repite", "Allow installing apps and retry"));
+            openUnknownSourcesSettings();
+            return;
+        }
+        downloadAppUpdate(appUpdUrl, appUpdTag);
     }
 
     private void startLocalServer() {
@@ -1266,7 +822,6 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     setBusy(false);
                     starting = false;
-                    refreshStepStatus();
                     serverOpen = done;
                     refreshActionButtons();
                     setDot(done);
@@ -1280,9 +835,7 @@ public class MainActivity extends AppCompatActivity {
                                 .putBoolean("onboarding_done", true)
                                 .putBoolean("wizard_done", true)
                                 .putBoolean("setup_ok", true).apply();
-                        applyOnboarding();
                     } else {
-                        refreshGuide();
                         // Si no arranco, el splash se destapa: el panel muestra el
                         // error y el boton de reintentar.
                         hideSplash();
@@ -1306,7 +859,6 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     setBusy(false);
                     starting = false;
-                    refreshStepStatus();
                     refreshActionButtons();
                     setDot(false);
                     txtStatus.setText(T("Runtime local fallo", "Local runtime failed"));
@@ -1320,231 +872,35 @@ public class MainActivity extends AppCompatActivity {
 
     /** Arranque SIN root: reparar config + serve, todo por intents RUN_COMMAND
      *  (se ejecutan dentro de Termux; exige allow-external-apps). */
-    private void startServerNoRoot() {
-        openGen++;
-        clearWatchHold();
-        new Thread(() -> {
-            StringBuilder t = new StringBuilder();
-            if (!TermuxRunner.isTermuxInstalled(this)) {
-                runOnUiThread(() -> {
-                    setBusy(false);
-                    refreshStepStatus();
-                    setDot(false);
-                    txtStatus.setText(T("Falta Termux", "Termux missing"));
-                    log("Falta com.termux: instalalo desde GitHub (boton de abajo),"
-                            + " abrelo una vez y pulsa Iniciar de nuevo.");
-                    snack(T("Instala Termux primero", "Install Termux first"));
-                });
-                return;
-            }
-            t.append("0) Sin root: reparo config dentro de Termux...\n")
-                    .append(TermuxRunner.repairViaService(this)).append("\n");
-            t.append("0b) Sin root: aplico interruptor permisos-auto...\n")
-                    .append(TermuxRunner.applyPermViaService(this, autoPerm())).append("\n");
-            try {
-                Thread.sleep(1500);
-            } catch (InterruptedException ignored) {
-            }
-            t.append("1/2 arranque por intent...\n")
-                    .append(TermuxRunner.startViaService(this)).append("\n");
-            boolean open = waitForPort(8000);
-            if (!open) {
-                t.append("2/2 reintento por intent...\n")
-                        .append(TermuxRunner.startViaService(this)).append("\n");
-                open = waitForPort(6000);
-            }
-            boolean done = open;
-            boolean httpOk = false;
-            if (done) {
-                t.append("Puerto abierto, esperando primer HTTP 200 (el servidor frio tarda)...\n");
-                httpOk = waitForHttp(30000);
-                t.append(httpOk ? "HTTP 200 listo, abriendo UI\n"
-                        : "HTTP tardo mas de 30s, no abro solo: pulsa Abrir chat en unos segundos\n");
-            }
-            final boolean httpOkF = httpOk;
-            String transcript = t.toString();
-            runOnUiThread(() -> {
-                setBusy(false);
-                refreshStepStatus();
-                serverOpen = done;
-                refreshActionButtons();
-                setDot(done);
-                txtStatus.setText(done ? T("Servidor abierto", "Server open") : T("Servidor sigue cerrado", "Server still closed"));
-                log(transcript + (done
-                        ? "OK: puerto " + PORT + " abierto"
-                        : "FALLO. Sigue la guia de abajo (paso 2: pega el comando UNA vez"
-                        + " en Termux), cierra Termux del todo, abrelo y pulsa Iniciar de nuevo."));
-                if (done) {
-                    getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("onboarding_done", true).apply();
-                    getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("wizard_done", true).putBoolean("setup_ok", true).apply();
-                    applyOnboarding();
-                } else {
-                    refreshGuide();
-                }
-                snack(done ? T("Servidor abierto", "Server open") : T("No arranco: mira el registro", "Did not start: check the log"));
-                if (done) {
-                    if (!shareBlocksAutoOpen()) {
-                        if (httpOkF) {
-                            enterChatLocked(() -> {
-                                webLoad(URL);
-                                setFullscreen(true);
-                            });
-                            new Thread(() -> {
-                                String w = TermuxRunner.wakeViaService(this, true);
-                                String first = w.split("\n")[0];
-                                runOnUiThread(() -> log("wake-lock: " + first + " (requiere app Termux:API)"));
-                            }).start();
-                        } else {
-                            snack(T("Servidor aun arrancando, pulsa Abrir chat en unos segundos", "Server still starting, press Open chat in a few seconds"));
-                        }
-                    }
-                }
-            });
-        }).start();
-    }
-
     /** Secuencia: script -> FGS root -> startservice root -> directo -> demonio -> diagnostico. */
     private void startServerSequence() {
         openGen++;
         clearWatchHold();
         setBusy(true);
-        btnStart.setEnabled(false);
-        if (LocalRuntime.available(this)) {
-            // El runtime local necesita leer/escribir archivos del movil: sin el
-            // permiso de archivos se pide ahora y el arranque sigue al volver.
-            if (!hasAllFilesAccess()) {
-                pendingStartAfterPerms = true;
-                if (filesPermTried) {
-                    // Ya se pidio en esta sesion: se destapa el panel con el aviso
-                    // en vez de dejar el splash esperando.
-                    pendingStartAfterPerms = false;
-                    starting = false;
-                    hideSplash();
-                    snack(T("Falta 'todos los archivos' para arrancar el agente",
-                            "All files access is needed to start the agent"));
-                } else {
-                    askAllFilesAccess();
-                }
-                return;
-            }
-            startLocalServer();
-            return;
-        }
-        // Sin Termux no hay donde correr: igual con root que sin root, a descargarlo.
-        if (!TermuxRunner.isTermuxInstalled(this)) {
+        if (!LocalRuntime.available(this)) {
             setBusy(false);
-            refreshStepStatus();
-            setDot(false);
-            txtStatus.setText(T("Falta Termux", "Termux missing"));
-            log("Falta com.termux: instalalo (abajo te digo cual), abrelo una vez"
-                    + " y pulsa Iniciar de nuevo.");
-            snack(T("Instala Termux primero", "Install Termux first"));
-            showTermuxDownloadGuide();
+            snack(T("Runtime local no disponible", "Local runtime not available"));
             return;
         }
-        // Sin root no hay su ni ficheros directos: todo via intents RUN_COMMAND.
-        if (rootChecked && !useRoot()) {
-            startServerNoRoot();
+        // El runtime local necesita leer/escribir archivos del movil: sin el
+        // permiso de archivos se pide ahora y el arranque sigue al volver.
+        if (!hasAllFilesAccess()) {
+            pendingStartAfterPerms = true;
+            if (filesPermTried) {
+                // Ya se pidio en esta sesion: se avisa y se deja el panel
+                // (el unico sitio con el boton de reintentar).
+                pendingStartAfterPerms = false;
+                starting = false;
+                hideSplash();
+                snack(T("Falta 'todos los archivos' para arrancar el agente",
+                        "All files access is needed to start the agent"));
+            } else {
+                askAllFilesAccess();
+            }
             return;
         }
-        new Thread(() -> {
-            StringBuilder t = new StringBuilder();
-            String rid = RootUtil.requestRoot();
-            if (!RootUtil.isRooted(rid)) {
-                runOnUiThread(() -> {
-                    setBusy(false);
-                    refreshStepStatus();
-                    setDot(false);
-                    txtStatus.setText(T("Root: denegado", "Root: denied"));
-                    log("$ su -c id\n" + rid
-                            + "\nConcede root en Magisk y pulsa Iniciar y abrir de nuevo.");
-                    snack(T("Root denegado: concede en Magisk", "Root denied: grant it in Magisk"));
-                });
-                return;
-            }
-            t.append("Root OK, escribiendo script...\n");
-            if (!TermuxRunner.isTermuxInstalled(this)) {
-                t.append("AVISO: com.termux no detectado en este dispositivo.\n");
-            }
-            String pre = RootUtil.preflight();
-            t.append("Preflight (vista root, en este movil puede ser fantasma):\n").append(pre).append("\n");
-            if (pre.contains("PREFLIGHT=EMPTY")) {
-                t.append("AVISO: root no ve el disco de Termux (namespace aislado)."
-                        + " Sigo igual: el arranque corre DENTRO de Termux y no necesita esa vista.\n");
-            }
-            t.append(RootUtil.ensureServeScript()).append("\n");
-            t.append("0c) auto-reparar config (doble ::):\n").append(RootUtil.repairConfig()).append("\n");
-            t.append("0d) interruptor permisos-auto (sincrono):\n").append(RootUtil.applyPermSync(autoPerm())).append("\n");
-            t.append("0b) permiso externo Termux:\n").append(RootUtil.ensureTermuxSetup()).append("\n");
-            t.append("1/4 FGS por root...\n").append(RootUtil.startViaSuForeground()).append("\n");
-            boolean open = waitForPort(8000);
-            if (!open) {
-                t.append("2/4 startservice por root...\n").append(RootUtil.startServerViaAm()).append("\n");
-                open = waitForPort(6000);
-            }
-            if (!open) {
-                t.append("3/4 servicio directo...\n").append(TermuxRunner.startViaService(this)).append("\n");
-                open = waitForPort(6000);
-            }
-            if (!open) {
-                t.append("4/4 demonio directo por root...\n").append(RootUtil.startDaemonDirect()).append("\n");
-                open = waitForPort(6000);
-            }
-            if (!open) {
-                t.append("Diagnostico:\n").append(RootUtil.diagnoseEnv()).append("\n");
-                t.append("Namespaces:\n").append(RootUtil.namespaceViews()).append("\n");
-            }
-            boolean done = open;
-            boolean httpOk = false;
-            if (done) {
-                t.append("Puerto abierto, esperando primer HTTP 200 (el servidor frio tarda)...\n");
-                httpOk = waitForHttp(30000);
-                t.append(httpOk ? "HTTP 200 listo, abriendo UI\n"
-                        : "HTTP tardo mas de 30s, no abro solo: pulsa Abrir UI en unos segundos\n");
-            }
-            final boolean httpOkF = httpOk;
-            String transcript = t.toString();
-            runOnUiThread(() -> {
-                setBusy(false);
-                refreshStepStatus();
-                serverOpen = done;
-                refreshActionButtons();
-                setDot(done);
-                txtStatus.setText(done ? T("Servidor abierto", "Server open") : T("Servidor sigue cerrado", "Server still closed"));
-                log(transcript + (done
-                        ? "OK: puerto " + PORT + " abierto"
-                        : "FALLO. Sigue la guia de abajo (paso 2: pega el comando UNA vez en Termux),"
-                        + " cierra Termux del todo, abrelo, y pulsa Iniciar de nuevo."));
-                if (done) {
-                    getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("onboarding_done", true).apply();
-                    getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("wizard_done", true).putBoolean("setup_ok", true).apply();
-                    applyOnboarding();
-                } else {
-                    refreshGuide();
-                }
-                snack(done ? T("Servidor abierto", "Server open") : T("No arranco: mira el registro", "Did not start: check the log"));
-                if (done) {
-                    if (!shareBlocksAutoOpen()) {
-                        if (httpOkF) {
-                            enterChatLocked(() -> {
-                                webLoad(URL);
-                                setFullscreen(true);
-                            });
-                            new Thread(() -> {
-                                String w = useRoot() ? RootUtil.fireTermuxCmd(RootUtil.WAKE_ON)
-                                        : TermuxRunner.wakeViaService(this, true);
-                                String first = w.split("\n")[0];
-                                runOnUiThread(() -> log("wake-lock: " + first + " (requiere app Termux:API)"));
-                            }).start();
-                        } else {
-                            snack(T("Servidor aun arrancando, pulsa Abrir UI en unos segundos", "Server still starting, press Open UI in a few seconds"));
-                        }
-                    }
-                }
-            });
-        }).start();
+        startLocalServer();
     }
-
     private PendingShare parseShareIntent(Intent intent) {
         if (intent == null) return null;
         String action = intent.getAction();
@@ -1872,15 +1228,6 @@ public class MainActivity extends AppCompatActivity {
                 if (!isPortOpen()) {
                     shareServerStarting = true;
                     shareServerStartFailed = false;
-                    for (int i = 0; i < 24 && !rootChecked; i++) {
-                        try {
-                            Thread.sleep(250);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            shareServerStarting = false;
-                            return false;
-                        }
-                    }
                     runOnUiThread(() -> {
                         if (btnStart != null && btnStart.isEnabled()) {
                             setShareSessionStatus(T("Arrancando servidor…", "Starting server…"),
@@ -2432,7 +1779,6 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     setSplashStatus(T("Abriendo el chat...", "Opening the chat..."));
                     // Si responde, el setup esta probado: asistente completado.
-                    markWizardDone();
                     enterChatLocked(() -> {
                         loadChatUrl();
                         setFullscreen(true);
@@ -2547,7 +1893,7 @@ public class MainActivity extends AppCompatActivity {
                     log("Puerto abierto sin HTTP 200 en 60s: servidor colgado,"
                             + " reinicio solo (equivale a Reiniciar).");
                     snack(T("Servidor colgado, reiniciando…", "Hung server, restarting…"));
-                    findViewById(R.id.btnRestart).performClick();
+                    restartServer();
                 } else {
                     txtStatus.setText(T("Sin respuesta: pulsa Abrir chat para reintentar",
                             "No answer: press Open chat to retry"));
@@ -2566,208 +1912,6 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isOnboarded() {
         return getSharedPreferences("app", MODE_PRIVATE).getBoolean("onboarding_done", false);
-    }
-
-    private void applyOnboarding() {
-        boolean onb = isOnboarded() || LocalRuntime.available(this);
-        View guide = findViewById(R.id.cardGuide);
-        if (guide != null) guide.setVisibility(onb ? View.GONE : View.VISIBLE);
-        // Tira de estados de los 5 pasos: solo mientras no este todo hecho.
-        View strip = findViewById(R.id.stepStatus);
-        if (strip != null) strip.setVisibility(onb ? View.GONE : View.VISIBLE);
-        // Botones sueltos antiguos: la guia los sustituye (quedan ocultos siempre).
-        findViewById(R.id.lblSteps).setVisibility(View.GONE);
-        findViewById(R.id.btnTermux).setVisibility(View.GONE);
-        findViewById(R.id.btnSetup).setVisibility(View.GONE);
-        findViewById(R.id.btnStabilize).setVisibility(View.GONE);
-        applyRootMode();
-        if (!onb) refreshGuide();
-    }
-
-    /** Guia paso a paso: detecta en que paso vas y te pone el siguiente delante. */
-    private void refreshGuide() {
-        if (isOnboarded() || LocalRuntime.available(this)) {
-            runOnUiThread(this::applyOnboarding);
-            return;
-        }
-        new Thread(() -> {
-            int step;
-            if (!TermuxRunner.isTermuxInstalled(this)) step = 1;
-            else if (serverOpen || isPortOpen()) step = 3;
-            else step = 2;
-            final int s = step;
-            runOnUiThread(() -> showGuideStep(s));
-        }).start();
-    }
-
-    private void showGuideStep(int s) {
-        View card = findViewById(R.id.cardGuide);
-        if (card == null || isOnboarded()) {
-            applyOnboarding();
-            return;
-        }
-        card.setVisibility(View.VISIBLE);
-        TextView title = findViewById(R.id.guideStep);
-        TextView desc = findViewById(R.id.guideDesc);
-        MaterialButton go = findViewById(R.id.guideGo);
-        MaterialButton go2 = findViewById(R.id.guideGo2);
-        if (go2 != null) go2.setVisibility(View.GONE);
-        TextView dots = findViewById(R.id.guideDots);
-        if (dots != null) dots.setText(s == 1 ? "● ○ ○" : s == 2 ? "○ ● ○" : "○ ○ ●");
-        View back = findViewById(R.id.guideBack);
-        if (back != null) {
-            back.setVisibility(s > 1 ? View.VISIBLE : View.GONE);
-            if (s > 1) {
-                ((MaterialButton) back).setText(T("< Atrás", "< Back"));
-                back.setOnClickListener(v -> showGuideStep(s - 1));
-            }
-        }
-        if (s == 1) {
-            title.setText(T("PASO 1 de 3 · Instalar Termux", "STEP 1 of 3 · Install Termux"));
-            desc.setText(T("Es donde corre el servidor, sin el no hay chat."
-                    + "\n\nVa a pasar:\n1. Se descarga el APK para tu chip\n2. Lo instalas con un toque\n3. Vuelves aqui solo",
-                    "The server runs inside it, no chat without it."
-                    + "\n\nWhat happens:\n1. The APK for your chip downloads\n2. You install it with one tap\n3. You come back here alone"));
-            go.setText(T("Descargar Termux", "Download Termux"));
-            go.setOnClickListener(v -> showTermuxDownloadGuide());
-        } else if (s == 2) {
-            title.setText(T("PASO 2 de 3 · Preparar Termux", "STEP 2 of 3 · Set up Termux"));
-            desc.setText(T("Abre Termux una vez primero (su instalacion inicial)."
-                    + " Un toque lo instala todo, lo veras correr."
-                    + "\n\nVa a pasar:\n1. Te pedira los permisos que falten (comandos, mostrar encima, archivos y batería)"
-                    + "\n2. Veras [1/3] [2/3] [3/3] en Termux\n3. Cierra Termux del todo, reabrelo y vuelve"
-                    + "\nSi no te pide archivos: en Termux escribe termux-setup-storage y acepta.",
-                    "Open Termux once first (its first-time setup)."
-                    + " One tap installs everything, you will see it run."
-                    + "\n\nWhat happens:\n1. It will ask for the missing permissions (commands, draw over apps, files and battery)"
-                    + "\n2. You will see [1/3] [2/3] [3/3] in Termux\n3. Fully close Termux, reopen it and come back"
-                    + "\nIf it does not ask for files: in Termux type termux-setup-storage and accept."));
-            final boolean tried = setupTried();
-            go.setText(tried ? T("Iniciar y abrir", "Start and open")
-                    : T("Instalar todo en Termux", "Install everything in Termux"));
-            go.setOnClickListener(v -> {
-                if (tried) {
-                    // Setup ya lanzado: el paso 2 queda hecho; ahora toca arrancar.
-                    if (btnStart.isEnabled()) {
-                        startServerSequence();
-                    } else {
-                        refreshStepStatus();
-                        snack(T("Completa los puntos rojos y pulsa Iniciar",
-                                "Complete the red dots and press Start"));
-                    }
-                    return;
-                }
-                if (ContextCompat.checkSelfPermission(this, "com.termux.permission.RUN_COMMAND")
-                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    log("Falta el permiso de Android 'Run commands in Termux environment'."
-                            + " Te abro la info de la app: entra en Permisos y activalo.");
-                    openAppInfo();
-                    return;
-                }
-                if (!TermuxRunner.isOverlayGranted(this)) {
-                    log("A Termux le falta 'mostrar sobre otras apps' (lo pide para sesiones visibles)."
-                            + " Te abro su ajuste: activalo y vuelve.");
-                    requestTermuxOverlay();
-                    return;
-                }
-                if (!hasAllFilesAccess()) {
-                    log("A esta app le falta 'todos los archivos' (lo necesita para"
-                            + " reparar la config de opencode). Te abro el ajuste: activalo y vuelve.");
-                    snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
-                    openAllFilesSettings();
-                    return;
-                }
-                if (!batteryExempt()) {
-                    log("Termux sin exencion de bateria (Android podria suspenderlo)."
-                            + " Te pido el ajuste: acepta y vuelve a pulsar.");
-                    requestBatteryExemption();
-                    return;
-                }
-                setBusy(true);
-                new Thread(() -> {
-                    StringBuilder t = new StringBuilder();
-                    if (useRoot()) {
-                        String b = RootUtil.bootstrapExternalApps();
-                        t.append("Permiso externo (root, automatico):\n").append(b).append("\n");
-                        if (b.contains("prop-escrita")) {
-                            // Reinicio en frio: rearrancar Termux y esperar a que asiente
-                            // antes del setup (si no, la sesion muere al nacer).
-                            TermuxRunner.openTermuxApp(this);
-                            boolean alive = false;
-                            for (int k = 0; k < 20; k++) {
-                                if (RootUtil.termuxAlive()) { alive = true; break; }
-                                try { Thread.sleep(500); } catch (InterruptedException e) { break; }
-                            }
-                            try { Thread.sleep(3000); } catch (InterruptedException e) { }
-                            t.append(alive ? "Termux rearrancado, lanzo setup.\n"
-                                    : "Termux no arranco: abrelo una vez y reintenta.\n");
-                        }
-                    }
-                    String r = TermuxRunner.runInTermux(this, SETUP_NOROOT, false, "Setup");
-                    if (!r.contains("sin permiso")) {
-                        getSharedPreferences("app", MODE_PRIVATE).edit()
-                                .putBoolean("setup_tried", true).apply();
-                    }
-                    final String transcript = t + "$ setup automatico:\n" + r
-                            + "\nMira Termux: veras [1/3] [2/3] [3/3].";
-                    runOnUiThread(() -> {
-                        setBusy(false);
-                        log(transcript);
-                        snack(r.contains("sin permiso")
-                                ? T("Falta el permiso: usa el boton de abajo", "Permission missing: use the button below")
-                                : T("Instalando en Termux...", "Installing in Termux..."));
-                    });
-                }).start();
-            });
-            if (go2 != null) {
-                go2.setVisibility(View.VISIBLE);
-                boolean needPerm = ContextCompat.checkSelfPermission(this,
-                        "com.termux.permission.RUN_COMMAND")
-                        != android.content.pm.PackageManager.PERMISSION_GRANTED;
-                boolean needOverlay = !TermuxRunner.isOverlayGranted(this);
-                if (needPerm) {
-                    go2.setText(T("Activar permiso (info de la app)", "Enable permission (app info)"));
-                    go2.setOnClickListener(v -> openAppInfo());
-                } else if (needOverlay) {
-                    go2.setText(T("Permitir mostrar encima (Termux)", "Allow display over apps (Termux)"));
-                    go2.setOnClickListener(v -> requestTermuxOverlay());
-                } else {
-                    go2.setText(T("¿Sin permiso? Pegar linea manual", "No permission? Paste line manually"));
-                    go2.setOnClickListener(v -> copyPermAndOpenTermux());
-                }
-            }
-            // Con root se verifica solo si opencode quedo instalado (fin del misterio).
-            if (useRoot()) {
-                new Thread(() -> {
-                    String chk = RootUtil.checkOpencodeInstalled();
-                    runOnUiThread(() -> {
-                        TextView d2 = findViewById(R.id.guideDesc);
-                        if (d2 != null) {
-                            String base = d2.getText().toString();
-                            if (!base.contains("Estado:") && !base.contains("Status:")) {
-                                d2.setText(base + "\n" + T("Estado: ", "Status: ") + chk.split("\n")[0]
-                                        + (chk.contains("opencode-ok")
-                                                ? T(" → pulsa Iniciar.", " → press Start.")
-                                                : T(" → pulsa el boton grande.\nTe pedira 3 permisos"
-                                                  + " (comandos, mostrar encima y archivos): concedelos y vuelve a pulsar."
-                                                  + " Mira Termux: veras [1/3] [2/3] [3/3]. Al acabar,"
-                                                  + " cierra Termux del todo, reabrelo y vuelve aqui.",
-                                                  " → press the big button.\nIt will ask for 3 permissions"
-                                                  + " (commands, display over apps and files): grant them and press again."
-                                                  + " Watch Termux: you will see [1/3] [2/3] [3/3]. When done,"
-                                                  + " fully close Termux, reopen it and come back.")));
-                            }
-                        }
-                        log("Verificacion opencode en Termux:\n" + chk);
-                    });
-                }).start();
-            }
-        } else {
-            title.setText(T("PASO 3 de 3 · Abrir el chat", "STEP 3 of 3 · Open the chat"));
-            desc.setText(T("Servidor detectado. Entra y listo.", "Server detected. Go in, done."));
-            go.setText(T("Abrir chat", "Open chat"));
-            go.setOnClickListener(v -> enterChatBlocking());
-        }
     }
 
     /** Idioma: automatico (idioma del movil) salvo override manual ES/EN. */
@@ -2790,8 +1934,6 @@ public class MainActivity extends AppCompatActivity {
         String es0 = "Listo. Pulsa Iniciar y abrir.", en0 = "Ready. Press Start and open.";
         android.widget.TextView l2 = findViewById(R.id.txtLog);
         if (l2 != null && !ls.isEmpty() && !ls.equals(es0) && !ls.equals(en0)) l2.setText(ls);
-        refreshGuide();
-        refreshStepStatus();
         checkStatus(false);
     }
     /** Repinta todos los textos visibles de la app en el idioma actual. */
@@ -2805,19 +1947,11 @@ public class MainActivity extends AppCompatActivity {
         }
         setLangText(R.id.btnStart, T("Iniciar y abrir", "Start and open"));
         setLangText(R.id.btnOpen, T("Abrir chat", "Open chat"));
-        setLangText(R.id.btnUpdate, T("Actualizar opencode", "Update opencode"));
-        setLangText(R.id.btnAppUpdate, T("Nueva versión de la app", "New app version"));
         setLangText(R.id.btnRestart, T("Reiniciar", "Restart"));
         setLangText(R.id.btnStop, T("Detener", "Stop"));
-        setLangText(R.id.btnTermux, T("Abrir Termux y copiar comando manual", "Open Termux and copy manual command"));
-        setLangText(R.id.btnSetup, T("Setup Termux: copiar comandos (una vez)", "Termux setup: copy commands (once)"));
-        setLangText(R.id.btnStabilize, T("Estabilizar Android (root, una vez)", "Stabilize Android (root, once)"));
-        setLangText(R.id.btnFdroid, T("1) Instalar Termux (GitHub)", "1) Install Termux (GitHub)"));
-        setLangText(R.id.btnBattery, T("Batería: no suspender a Termux", "Battery: do not suspend Termux"));
         setLangText(R.id.btnCopy, T("Copiar", "Copy"));
         setLangText(R.id.btnClear, T("Limpiar", "Clear"));
         setLangText(R.id.logTitle, T("Registro", "Log"));
-        setLangText(R.id.lblSteps, T("Un toque abre el chat: root → servidor → UI", "One tap opens the chat: root → server → UI"));
         setLangText(R.id.txtLog, T("Listo. Pulsa Iniciar y abrir.", "Ready. Press Start and open."));
         setLangText(R.id.txtStatus, T("Servidor ?", "Server ?"));
         refreshUpdateBtn();
@@ -2828,15 +1962,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Root efectivo del movil. */
-    private boolean useRoot() {
-        return hasRoot;
-    }
-
     /** Sin root: oculta Estabilizar. El boton de descarga lo maneja la guia. */
-    private void applyRootMode() {
-        if (!useRoot()) findViewById(R.id.btnStabilize).setVisibility(View.GONE);
-    }
-
     private void checkStatus(boolean verbose) {
         setBusy(true);
         new Thread(() -> {
@@ -2847,14 +1973,6 @@ public class MainActivity extends AppCompatActivity {
                 txtStatus.setText(open ? T("Servidor abierto", "Server open") : T("Servidor cerrado", "Server closed"));
                 serverOpen = open;
                 refreshActionButtons();
-                if (!wizardDone() && open) {
-                    // Servidor abierto: si dice su version, el setup esta
-                    // probado y el asistente se completa solo (migra
-                    // instalaciones que ya funcionaban sin mostrar nada).
-                    new Thread(() -> {
-                        if (queryHealthVersion() != null) runOnUiThread(this::markWizardDone);
-                    }).start();
-                }
                 if (verbose) {
                     log(open ? "OK: puerto " + PORT + " abierto"
                             : "Puerto " + PORT + " cerrado. Pulsa Iniciar o usa el boton Termux.");
@@ -2897,30 +2015,12 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         new Thread(() -> {
-            if (!local) {
-                // La deteccion de root corre en otro hilo al arrancar: esperarla
-                // (si no, se eligiria la via sin-root y fallaria en vano).
-                long wEnd = System.currentTimeMillis() + 12000;
-                while (!rootChecked && System.currentTimeMillis() < wEnd) {
-                    try {
-                        Thread.sleep(500);
-                    } catch (InterruptedException e) {
-                        break;
-                    }
-                }
-            }
             synchronized (updDbg) {
                 updDbg.setLength(0);
-                if (local) {
-                    updDbg.append("local=").append(activeVer);
-                } else {
-                    updDbg.append("root=").append(useRoot());
-                }
+                updDbg.append("local=").append(activeVer);
                 updDbg.append(" arch=").append(hasAllFilesAccess() ? "ok" : "sin-acceso");
             }
             android.util.Log.d("OC-Update", "check hilo: local=" + local
-                    + " rootChecked=" + rootChecked
-                    + " hasRoot=" + hasRoot + " useRoot=" + useRoot()
                     + " arch=" + hasAllFilesAccess());
             String installed = local ? activeVer : queryInstalledVersion();
             String latest = fetchLatestTag();
@@ -2998,16 +2098,6 @@ public class MainActivity extends AppCompatActivity {
                     updDbg.append(" health=").append(hv);
                 }
                 return hv;
-            }
-            if (useRoot()) {
-                String out = RootUtil.nsenterTermux(
-                        "command -v opencode >/dev/null 2>&1"
-                                + " && opencode --version 2>&1 | head -1 || echo no-opencode");
-                synchronized (updDbg) {
-                    updDbg.append(" nsenter=").append(out == null ? "null"
-                            : out.replace("\n", "|").substring(0, Math.min(80, out.replace("\n", "|").length())));
-                }
-                return parseVer(out);
             }
             synchronized (updDbg) {
                 updDbg.append(" servidor-parado-sin-root");
@@ -3135,15 +2225,6 @@ public class MainActivity extends AppCompatActivity {
         }
         return isPortOpen();
     }
-
-    private void copyManualCommand() {
-        try {
-            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(ClipData.newPlainText("opencode", MANUAL_CMD));
-        } catch (Exception ignored) {
-        }
-    }
-
     private int attrColor(int attr) {
         TypedValue tv = new TypedValue();
         getTheme().resolveAttribute(attr, tv, true);
@@ -3246,19 +2327,19 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
             if (id == 3) {
-                findViewById(R.id.btnRestart).performClick();
+                restartServer();
                 return true;
             }
             if (id == 4) {
-                findViewById(R.id.btnStop).performClick();
+                stopServer();
                 return true;
             }
             if (id == 5) {
-                findViewById(R.id.btnUpdate).performClick();
+                startRuntimeUpdate();
                 return true;
             }
             if (id == 10) {
-                findViewById(R.id.btnAppUpdate).performClick();
+                installAppUpdateNow();
                 return true;
             }
             if (id == 11) {
@@ -3273,7 +2354,7 @@ public class MainActivity extends AppCompatActivity {
                         : T("Permisos automáticos desactivados", "Auto-approve disabled"));
                 if (serverOpen) {
                     log(T("Servidor abierto: reinicio para aplicar...", "Server open: restarting to apply..."));
-                    findViewById(R.id.btnRestart).performClick();
+                    restartServer();
                 } else {
                     log(T("Se aplicará al arrancar el servidor.", "Will apply on server start."));
                 }
@@ -3379,6 +2460,39 @@ public class MainActivity extends AppCompatActivity {
                     refresh.run();
                 });
         addOptionRow(root,
+                T("Root (su)", "Root (su)"),
+                T("Si el movil tiene root, el agente puede ejecutar comandos con su"
+                        + " (Magisk/KernelSU piden permiso). Apagado no pide nada.",
+                        "If the phone is rooted, the agent can run commands via su"
+                                + " (Magisk/KernelSU ask). Off never prompts."),
+                "no".equals(RootShell.state(this)) ? T("Sin su", "No su")
+                        : !RootShell.enabled(this) ? T("OFF", "OFF")
+                        : "on".equals(RootShell.state(this)) ? T("Si", "ON")
+                        : "denied".equals(RootShell.state(this)) ? T("Denegado", "Denied")
+                        : T("Pedir", "Ask"),
+                () -> {
+                    if (!RootShell.available()) {
+                        snack(T("Este movil no tiene su", "This phone has no su"));
+                        return;
+                    }
+                    boolean now = !RootShell.enabled(this);
+                    RootShell.setEnabled(this, now);
+                    if (now) {
+                        snack(T("Pidiendo root...", "Asking for root..."));
+                        new Thread(() -> {
+                            boolean ok = RootShell.request(this);
+                            runOnUiThread(() -> {
+                                snack(ok ? T("Root concedido", "Root granted")
+                                        : T("Root denegado", "Root denied"));
+                                refresh.run();
+                            });
+                        }, "su-request").start();
+                    } else {
+                        snack(T("Root desactivado", "Root disabled"));
+                        refresh.run();
+                    }
+                });
+        addOptionRow(root,
                 T("Bloqueo de app", "App lock"),
                 T("Pide el desbloqueo del móvil (PIN, patrón, huella) una vez al entrar al chat."
                         + " Apagado por defecto; si tu móvil no tiene bloqueo, te manda a crearlo.",
@@ -3467,7 +2581,6 @@ public class MainActivity extends AppCompatActivity {
             b.append("- Android: ").append(Build.VERSION.RELEASE)
                     .append(" (SDK ").append(Build.VERSION.SDK_INT).append("), ")
                     .append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append("\n");
-            b.append("- Root: ").append(useRoot() ? "sí" : "no").append("\n");
             b.append("- Servidor: ").append(serverOpen ? "abierto" : "cerrado").append("\n");
             b.append("- opencode instalada: ").append(installed)
                     .append(" (última conocida: ").append(latest).append(")\n");
@@ -3528,42 +2641,9 @@ public class MainActivity extends AppCompatActivity {
     /** Pasos del primer arranque: el boton grande va oscurecido hasta que los
      *  5 esten en verde; debajo se ve su estado (punto rojo/verde, sin botones).
      *  Todo se detecta solo al volver de Ajustes/Termux (refreshStepStatus). */
-    private boolean wizardDone() {
-        return getSharedPreferences("app", MODE_PRIVATE).getBoolean("wizard_done", false);
-    }
-
-    private boolean setupOk() {
-        return getSharedPreferences("app", MODE_PRIVATE).getBoolean("setup_ok", false);
-    }
-
     /** El comando de setup quedo pegado/lanzado (la prueba fina es el primer
      *  arranque con exito). Sin esto, tras pegar el setup el boton seguiria
      *  oscurecido esperando una prueba que aun no se puede pedir. */
-    private boolean setupTried() {
-        return getSharedPreferences("app", MODE_PRIVATE).getBoolean("setup_tried", false);
-    }
-
-    private void markWizardDone() {
-        getSharedPreferences("app", MODE_PRIVATE).edit()
-                .putBoolean("wizard_done", true)
-                .putBoolean("setup_ok", true)
-                .putBoolean("onboarding_done", true).apply();
-        // La tarjeta (PASO x de 3) se esconde por onboarding_done: sin esto,
-        // entrar al chat con el servidor ya abierto la dejaba visible para siempre.
-        applyOnboarding();
-        refreshStepStatus();
-    }
-
-    private boolean batteryExempt() {
-        try {
-            android.os.PowerManager pm = (android.os.PowerManager)
-                    getSystemService(Context.POWER_SERVICE);
-            return pm != null && pm.isIgnoringBatteryOptimizations("com.termux");
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     private void openAllFilesSettings() {
         try {
             startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
@@ -3572,60 +2652,7 @@ public class MainActivity extends AppCompatActivity {
             log("Abre manual: Ajustes > Apps > OpenCode Android > Todos los archivos.");
         }
     }
-
-    /** Recalcula los 5 pasos del primer arranque: repinta la tira de puntos
-     *  (rojo = falta, verde = hecho) y el oscurecido del boton grande. */
-    private volatile boolean stepsGreen = false;
-
-    private void refreshStepStatus() {
-        if (LocalRuntime.available(this)) {
-            stepsGreen = true;
-            runOnUiThread(this::applyStepStatus);
-            return;
-        }
-        if (wizardDone() || isOnboarded()) {
-            stepsGreen = true;
-            runOnUiThread(this::applyStepStatus);
-            return;
-        }
-        new Thread(() -> {
-            boolean hasTermux = TermuxRunner.isTermuxInstalled(this);
-            boolean setup = setupOk() || setupTried();
-            boolean ov = TermuxRunner.isOverlayGranted(this);
-            boolean files = hasAllFilesAccess();
-            boolean bat = batteryExempt();
-            stepsGreen = hasTermux && setup && ov && files && bat;
-            runOnUiThread(() -> applyStepStatus(hasTermux, setup, ov, files, bat));
-        }).start();
-    }
-
-    /** Sin wizard completado el boton no se enciende hasta tener los 5 en verde. */
-    private void applyStepStatus() {
-        btnStart.setEnabled(stepsGreen || wizardDone());
-    }
-
-    private void applyStepStatus(boolean hasTermux, boolean setup, boolean ov,
-            boolean files, boolean bat) {
-        applyStepStatus();
-        updateStepRow(R.id.stepRow1, hasTermux,
-                T("1 · Termux instalado", "1 · Termux installed"));
-        updateStepRow(R.id.stepRow2, setup,
-                T("2 · Setup en Termux", "2 · Setup in Termux"));
-        updateStepRow(R.id.stepRow3, ov,
-                T("3a · Termux puede mostrarse encima", "3a · Termux can draw over apps"));
-        updateStepRow(R.id.stepRow4, files, T("3b · Archivos de la app", "3b · App files"));
-        updateStepRow(R.id.stepRow5, bat,
-                T("3c · Batería sin restricciones", "3c · Unrestricted battery"));
-    }
-
     /** Punto rojo (falta) / verde (hecho). Solo estado: sin botones. */
-    private void updateStepRow(int id, boolean ok, String label) {
-        TextView row = findViewById(id);
-        if (row == null) return;
-        row.setText("● " + label);
-        row.setTextColor(ok ? 0xFF1E8E3E : 0xFFC62828);
-    }
-
     /** Consumo de cuota: lee las sesiones de la API local (no depende del widget
      *  de la web, que en anonimo se queda girando). Muestra tokens, coste y fecha;
      *  permite borrar con confirmacion. */
@@ -3920,17 +2947,8 @@ public class MainActivity extends AppCompatActivity {
 
     /** El boton Actualizar solo existe si hay update: si no, desaparece.
      *  Con update muestra las versiones (instalada → ultima). */
-    private void refreshUpdateBtn() {
-        View b = findViewById(R.id.btnUpdate);
-        if (b == null) return;
-        b.setVisibility(updatePending && updateInstallable && !fullscreen
-                ? View.VISIBLE : View.GONE);
-        if (updatePending && updateInstallable && b instanceof android.widget.TextView) {
-            ((android.widget.TextView) b).setText(
-                    T("Actualizar opencode ", "Update opencode ")
-                            + updInstalled + " → " + updLatest);
-        }
-        // El boton de la app va siempre con este (panel, idioma, pantalla completa).
+private void refreshUpdateBtn() {
+        // Panel sin botones: el estado del update vive en el menu del FAB.
         refreshAppUpdateBtn();
     }
 
@@ -4085,15 +3103,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void refreshAppUpdateBtn() {
-        View b = findViewById(R.id.btnAppUpdate);
-        if (b == null) return;
-        b.setVisibility(appUpdatePending && !fullscreen ? View.VISIBLE : View.GONE);
-        if (appUpdatePending && b instanceof android.widget.TextView) {
-            ((android.widget.TextView) b).setText(
-                    T("Nueva versión de la app ", "New app version ")
-                            + appUpdTag + T(" — Descargar", " — Download"));
-        }
+private void refreshAppUpdateBtn() {
+        // Sin boton en el panel: el aviso va en el menu del FAB/notificacion.
     }
 
     /** Baja el APK del launcher con DownloadManager (avisa solo) e instala. */
@@ -4207,10 +3218,6 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.appBar).setVisibility(vis);
         findViewById(R.id.toolbar).setVisibility(vis);
         findViewById(R.id.cardStatus).setVisibility(vis);
-        findViewById(R.id.lblSteps).setVisibility(View.GONE);
-        View guide = findViewById(R.id.cardGuide);
-        if (guide != null) guide.setVisibility(full || isOnboarded() ? View.GONE : View.VISIBLE);
-        if (!full) refreshGuide();
         refreshActionButtons();
         findViewById(R.id.boxAdvanced).setVisibility(
                 full ? View.GONE : (advancedOpen ? View.VISIBLE : View.GONE));
@@ -4547,7 +3554,6 @@ public class MainActivity extends AppCompatActivity {
                     updating = false;
                     progress.setIndeterminate(true);
                     progress.setVisibility(View.GONE);
-                    findViewById(R.id.btnUpdate).setEnabled(true);
                     log("Progreso: timeout 30min, revisa Termux manual.");
                     snack(T("Timeout de progreso", "Progress timeout"));
                     return;
@@ -4615,7 +3621,6 @@ public class MainActivity extends AppCompatActivity {
                                 updating = false;
                                 progress.setIndeterminate(true);
                                 progress.setVisibility(View.GONE);
-                                findViewById(R.id.btnUpdate).setEnabled(true);
                                 getSharedPreferences("app", MODE_PRIVATE).edit()
                                         .putLong("upd_ts", 0).apply();
                             }
@@ -4676,19 +3681,14 @@ public class MainActivity extends AppCompatActivity {
         updating = false;
         progress.setIndeterminate(true);
         progress.setVisibility(View.GONE);
-        findViewById(R.id.btnUpdate).setEnabled(true);
         getSharedPreferences("app", MODE_PRIVATE).edit()
                 .putLong("upd_ts", 0).apply();
-        findViewById(R.id.btnRestart).performClick();
+        restartServer();
     }
 
     @Override
     protected void onDestroy() {
         stopProgressPoll();
-        try {
-            if (termuxDownloadReceiver != null) unregisterReceiver(termuxDownloadReceiver);
-        } catch (Exception ignored) {
-        }
         super.onDestroy();
     }
 

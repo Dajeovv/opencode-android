@@ -73,84 +73,7 @@
             </LinearLayout>
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/lblSteps"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="8dp"
-            android:text="@string/steps_title"
-            android:textAppearance="?attr/textAppearanceLabelLarge" />
-
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardGuide"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:visibility="gone"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="0dp"
-            app:strokeWidth="1dp"
-            app:strokeColor="?attr/colorPrimary"
-            app:contentPadding="16dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
-
-                <TextView
-                    android:id="@+id/guideDots"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="● ○ ○"
-                    android:textAppearance="?attr/textAppearanceLabelMedium"
-                    android:textColor="?attr/colorPrimary" />
-
-                <TextView
-                    android:id="@+id/guideStep"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="PASO 1 DE 3"
-                    android:textAppearance="?attr/textAppearanceLabelLarge"
-                    android:textColor="?attr/colorPrimary" />
-
-                <TextView
-                    android:id="@+id/guideDesc"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:textAppearance="?attr/textAppearanceBodyMedium" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/guideGo"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:minHeight="56dp"
-                    android:text="Continuar" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/guideGo2"
-                    style="?attr/borderlessButtonStyle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:minHeight="48dp"
-                    android:text="Secundario"
-                    android:visibility="gone" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/guideBack"
-                    style="?attr/borderlessButtonStyle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:minHeight="48dp"
-                    android:text="&lt; Atrás"
-                    android:visibility="gone" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <com.google.android.material.button.MaterialButton
+                        <com.google.android.material.button.MaterialButton
             android:id="@+id/btnStart"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -159,65 +82,7 @@
             android:text="Iniciar y abrir"
             app:icon="@android:drawable/ic_media_play" />
 
-        <LinearLayout
-            android:id="@+id/stepStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/stepRow1"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="3dp"
-                android:paddingBottom="3dp"
-                android:text="● 1 · Termux instalado"
-                android:textColor="#C62828"
-                android:textSize="15sp" />
-
-            <TextView
-                android:id="@+id/stepRow2"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="3dp"
-                android:paddingBottom="3dp"
-                android:text="● 2 · Setup en Termux"
-                android:textColor="#C62828"
-                android:textSize="15sp" />
-
-            <TextView
-                android:id="@+id/stepRow3"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="3dp"
-                android:paddingBottom="3dp"
-                android:text="● 3a · Termux puede mostrarse encima"
-                android:textColor="#C62828"
-                android:textSize="15sp" />
-
-            <TextView
-                android:id="@+id/stepRow4"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="3dp"
-                android:paddingBottom="3dp"
-                android:text="● 3b · Archivos de la app"
-                android:textColor="#C62828"
-                android:textSize="15sp" />
-
-            <TextView
-                android:id="@+id/stepRow5"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="3dp"
-                android:paddingBottom="3dp"
-                android:text="● 3c · Batería sin restricciones"
-                android:textColor="#C62828"
-                android:textSize="15sp" />
-        </LinearLayout>
-
-        <com.google.android.material.button.MaterialButton
+                <com.google.android.material.button.MaterialButton
             android:id="@+id/btnOpen"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -227,29 +92,7 @@
             android:visibility="gone"
             app:icon="@android:drawable/ic_menu_view" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnUpdate"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:minHeight="48dp"
-            android:text="Actualizar opencode"
-            android:visibility="gone"
-            app:icon="@android:drawable/ic_menu_upload" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnAppUpdate"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:minHeight="48dp"
-            android:text="Nueva versión de la app"
-            android:visibility="gone"
-            app:icon="@android:drawable/ic_menu_upload" />
-
-        <LinearLayout
+                        <LinearLayout
             android:id="@+id/boxAdvanced"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -276,61 +119,7 @@
                 android:text="Detener"
                 app:icon="@android:drawable/ic_menu_close_clear_cancel" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnTools"
-                style="?attr/borderlessButtonStyle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:minHeight="48dp"
-                android:text="Herramientas"
-                app:icon="@android:drawable/ic_menu_manage" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnTermux"
-                style="?attr/borderlessButtonStyle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:minHeight="48dp"
-                android:text="Abrir Termux y copiar comando manual"
-                android:visibility="gone" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnSetup"
-                style="?attr/borderlessButtonStyle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="48dp"
-                android:text="Setup Termux: copiar comandos (una vez)"
-                android:visibility="gone" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStabilize"
-                style="?attr/borderlessButtonStyle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="48dp"
-                android:text="Estabilizar Android (root, una vez)" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnFdroid"
-                style="?attr/borderlessButtonStyle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="48dp"
-                android:text="1) Instalar Termux (GitHub)"
-                android:visibility="gone" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnBattery"
-                style="?attr/borderlessButtonStyle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="48dp"
-                android:text="Batería: no suspender a Termux" />
-
-            <com.google.android.material.card.MaterialCardView
+                                                                                    <com.google.android.material.card.MaterialCardView
                 android:id="@+id/cardLog"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

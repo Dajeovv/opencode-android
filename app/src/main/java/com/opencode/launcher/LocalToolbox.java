@@ -599,6 +599,17 @@ public final class LocalToolbox {
                     + " \"$@\"\n";
             writeScript(f, body);
         }
+
+        // Comandos con root: el agente los manda por HTTP y la app usa su.
+        File root = new File(bin, "opencode-root");
+        String rootBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
+                + "# Ejecuta un comando como root (la app pide el permiso de su).\n"
+                + "PORT=${OPENCODE_TOOLBOX_PORT:-" + ToolboxServer.PORT + "}\n"
+                + "TOK=$OPENCODE_TOOLBOX_TOKEN\n"
+                + "exec /data/data/com.termux/files/usr/bin/curl -s -X POST \\\n"
+                + "  -H \"X-OpenCode-Token: $TOK\" --data-urlencode \"cmd=$*\" \\\n"
+                + "  \"http://127.0.0.1:$PORT/root\"\n";
+        writeScript(root, rootBody);
     }
 
     private static void writeScript(File f, String body) {
