@@ -142,6 +142,9 @@ public class MainActivity extends AppCompatActivity {
     private int fabRestoreTries = 0;
     private View splash;
     private TextView splashStatus;
+    private MaterialButton splashRetry;
+    private Runnable pendingRetry;
+    private int retryAttempt = 0;
     private boolean splashDone = false;
     private long splashStart = 0;
     private String pendingSplashSnack;
@@ -284,6 +287,8 @@ public class MainActivity extends AppCompatActivity {
         // que no se vea el salto brusco del panel al chat.
         splash = findViewById(R.id.splash);
         splashStatus = findViewById(R.id.splashStatus);
+        splashRetry = findViewById(R.id.splashRetry);
+        splashRetry.setOnClickListener(v -> retryStartupNow());
         splashStart = SystemClock.uptimeMillis();
         boxContent.setAlpha(0f);
         boxContent.setTranslationY(24f);
@@ -299,12 +304,12 @@ public class MainActivity extends AppCompatActivity {
         Handler splashHandler = new Handler(Looper.getMainLooper());
         if (LocalRuntime.available(this)) {
             // Runtime local: el splash (logo + cargando) aguanta hasta que el
-            // chat este dentro. Si el servidor no llega, se destapa el panel
-            // para que se pueda reintentar a mano.
+            // chat este dentro. Si el servidor no llega, se queda en el splash
+            // con Reintentar y reintentos automaticos (nunca el panel).
             splashHandler.postDelayed(() -> {
                 if (!splashDone && !serverOpen) {
-                    log("El servidor local no respondio a tiempo: destapo el panel.");
-                    hideSplash();
+                    startupFailed(T("El agente no respondio. Seguimos intentando...",
+                            "The agent did not answer. Still trying..."));
                 }
             }, 120000);
         } else {
@@ -430,12 +435,24 @@ public class MainActivity extends AppCompatActivity {
                 refreshActionButtons();
                 setDot(false);
                 setFullscreen(false);
-                txtStatus.setText(T("Servidor no responde: pulsa Abrir chat para reintentar",
-                        "Server not answering: press Open chat to retry"));
-                log("WebView error (vuelvo al panel, sin blanco): "
+                txtStatus.setText(T("Servidor no responde: reintentando",
+                        "Server not answering: retrying"));
+                log("WebView error (sin blanco): "
                         + (error == null ? "?" : String.valueOf(error.getDescription())));
-                snack(T("Servidor no responde", "Server not answering"));
-                hideSplash();
+                if (chatOnly()) {
+                    if (!splashDone) {
+                        startupFailed(T("Sin conexion con el agente. Reintentando...",
+                                "No connection to the agent. Retrying..."));
+                    } else {
+                        snack(T("Sin conexion con el agente", "No connection to the agent"));
+                        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                            if (!isFinishing() && !urlLoading) webLoad(URL);
+                        }, 2500);
+                    }
+                } else {
+                    snack(T("Servidor no responde", "Server not answering"));
+                    hideSplash();
+                }
             }
             @Override
             public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler,
@@ -611,7 +628,10 @@ public class MainActivity extends AppCompatActivity {
 
 
         log("Pulsa Iniciar y abrir. Si el servidor ya corre, entras directo al chat.");
-        // El vigía sobrevive solo hasta reiniciar: rearmarlo siempre (si esta OFF no hace nada).
+        // Next: no existe panel. Se oculta todo lo que no sea el chat; el
+        // arranque vive en el splash y los fallos se reintentan ahi.
+        if (chatOnly()) applyChatOnlyChrome();
+        // El vig��a sobrevive solo hasta reiniciar: rearmarlo siempre (si esta OFF no hace nada).
         ServerWatch.arm(this);
         // Chequeo diario de updates aunque la app este cerrada (solo avisa).
         ServerWatch.armUpdateCheck(this);
@@ -651,10 +671,11 @@ public class MainActivity extends AppCompatActivity {
         if (filesAskPending) {
             filesAskPending = false;
             if (!hasAllFilesAccess()) {
-                // Denegado: se destapa el panel para poder reintentar a mano.
+                // Denegado: el splash explica y ofrece reintentar.
                 pendingStartAfterPerms = false;
                 starting = false;
-                hideSplash();
+                startupFailed(T("Falta 'todos los archivos' para arrancar el agente",
+                        "All files access is needed to start the agent"));
             }
         }
         if (pendingStartAfterPerms && hasAllFilesAccess()) onAllFilesAccessReady();
@@ -836,9 +857,10 @@ public class MainActivity extends AppCompatActivity {
                                 .putBoolean("wizard_done", true)
                                 .putBoolean("setup_ok", true).apply();
                     } else {
-                        // Si no arranco, el splash se destapa: el panel muestra el
-                        // error y el boton de reintentar.
-                        hideSplash();
+                        // Si no arranco, el splash muestra Reintentar y la
+                        // app reintenta sola; el panel ya no existe en Next.
+                        startupFailed(T("No arranco. Reintentando...",
+                                "Did not start. Retrying..."));
                     }
                     snack(done ? T("Servidor abierto", "Server open")
                             : T("No arranco: mira el registro", "Did not start: check the log"));
@@ -850,8 +872,11 @@ public class MainActivity extends AppCompatActivity {
                                 setFullscreen(true);
                             });
                         } else {
-                            snack(T("Servidor aun arrancando, pulsa Abrir chat en unos segundos",
-                                    "Server still starting, press Open chat in a few seconds"));
+                            // Puerto abierto pero HTTP lento: se sigue esperando
+                            // dentro del splash, sin pedirle nada al usuario.
+                            setSplashStatus(T("Abriendo el chat...", "Opening the chat..."));
+                            new Handler(Looper.getMainLooper())
+                                    .postDelayed(this::enterChatBlocking, 1500);
                         }
                     }
                 });
@@ -864,7 +889,8 @@ public class MainActivity extends AppCompatActivity {
                     txtStatus.setText(T("Runtime local fallo", "Local runtime failed"));
                     log(t.toString() + "ERROR: " + e + "\nRevisa logcat con etiqueta OpenCodeLocal.");
                     snack(T("Runtime local fallo, mira el registro", "Local runtime failed, check the log"));
-                    hideSplash();
+                    startupFailed(T("Runtime local fallo. Reintentando...",
+                            "Local runtime failed. Retrying..."));
                 });
             }
         }).start();
@@ -887,12 +913,10 @@ public class MainActivity extends AppCompatActivity {
         if (!hasAllFilesAccess()) {
             pendingStartAfterPerms = true;
             if (filesPermTried) {
-                // Ya se pidio en esta sesion: se avisa y se deja el panel
-                // (el unico sitio con el boton de reintentar).
+                // Ya se pidio en esta sesion: se avisa y se reintenta solo.
                 pendingStartAfterPerms = false;
                 starting = false;
-                hideSplash();
-                snack(T("Falta 'todos los archivos' para arrancar el agente",
+                startupFailed(T("Falta 'todos los archivos' para arrancar el agente",
                         "All files access is needed to start the agent"));
             } else {
                 askAllFilesAccess();
@@ -1762,6 +1786,74 @@ public class MainActivity extends AppCompatActivity {
 
     /** Chat-first: al abrir la app, si el servidor ya responde, directo al chat sin toques.
      *  Si esta caido, lo arranca solo y la secuencia abre el chat al acabar. */
+    /** Next: el panel no existe; solo el chat (o el splash mientras arranca). */
+    private void applyChatOnlyChrome() {
+        fullscreen = true;
+        findViewById(R.id.appBar).setVisibility(View.GONE);
+        findViewById(R.id.progress).setVisibility(View.GONE);
+        findViewById(R.id.cardStatus).setVisibility(View.GONE);
+        btnStart.setVisibility(View.GONE);
+        btnOpen.setVisibility(View.GONE);
+        findViewById(R.id.boxAdvanced).setVisibility(View.GONE);
+        View logCard = findViewById(R.id.cardLog);
+        if (logCard != null) logCard.setVisibility(View.GONE);
+        cardWeb.setVisibility(View.VISIBLE);
+        // onCreate deja boxContent transparente para la entrada del splash; en
+        // Next no hay animacion de panel, asi que se muestra ya.
+        boxContent.setAlpha(1f);
+        boxContent.setTranslationY(0f);
+        applyChatChrome(true);
+        fabControls.setVisibility(View.GONE);
+    }
+
+    /** El arranque fallo: se queda el splash con un reintento (nunca el panel). */
+    private void startupFailed(String message) {
+        starting = false;
+        setBusy(false);
+        if (!chatOnly()) {
+            hideSplash();
+            return;
+        }
+        setSplashStatus(message);
+        if (!splashDone && splashRetry != null) {
+            splashRetry.setVisibility(View.VISIBLE);
+        } else if (retryAttempt == 0) {
+            snack(message);
+        }
+        scheduleStartupRetry();
+    }
+
+    private void scheduleStartupRetry() {
+        if (!chatOnly() || pendingRetry != null || isFinishing()) return;
+        int[] delays = {3000, 5000, 10000, 20000, 30000};
+        int idx = Math.min(retryAttempt, delays.length - 1);
+        retryAttempt++;
+        pendingRetry = () -> {
+            pendingRetry = null;
+            if (isFinishing() || serverOpen || starting) return;
+            if (!hasAllFilesAccess()) {
+                startupFailed(T("Falta 'todos los archivos' para arrancar el agente",
+                        "All files access is needed to start the agent"));
+                return;
+            }
+            if (splashRetry != null) splashRetry.setVisibility(View.GONE);
+            setSplashStatus(T("Reintentando...", "Retrying..."));
+            startServerSequence();
+        };
+        new Handler(Looper.getMainLooper()).postDelayed(pendingRetry, delays[idx]);
+    }
+
+    private void retryStartupNow() {
+        if (pendingRetry != null) {
+            new Handler(Looper.getMainLooper()).removeCallbacks(pendingRetry);
+            pendingRetry = null;
+        }
+        retryAttempt = 0;
+        if (splashRetry != null) splashRetry.setVisibility(View.GONE);
+        setSplashStatus(T("Reintentando...", "Retrying..."));
+        startServerSequence();
+    }
+
     private void autoOpenIfRunning() {
         if (LocalRuntime.available(this)) {
             // Runtime local: arranca solo y no se repite si ya esta arrancando.
@@ -1895,11 +1987,10 @@ public class MainActivity extends AppCompatActivity {
                     snack(T("Servidor colgado, reiniciando…", "Hung server, restarting…"));
                     restartServer();
                 } else {
-                    txtStatus.setText(T("Sin respuesta: pulsa Abrir chat para reintentar",
-                            "No answer: press Open chat to retry"));
                     log("Chat sin HTTP 200 en 60s: no abro (evita blanco)."
-                            + " Pulsa Abrir chat para reintentar o Reiniciar servidor.");
-                    snack(T("Sin respuesta del servidor", "No answer from server"));
+                            + " Reintento automatico.");
+                    startupFailed(T("Sin respuesta del servidor. Reintentando...",
+                            "No answer from the server. Retrying..."));
                 }
             });
         }).start();
@@ -2896,6 +2987,12 @@ public class MainActivity extends AppCompatActivity {
     private void hideSplash() {
         if (splashDone) return;
         splashDone = true;
+        retryAttempt = 0;
+        if (pendingRetry != null) {
+            new Handler(Looper.getMainLooper()).removeCallbacks(pendingRetry);
+            pendingRetry = null;
+        }
+        if (splashRetry != null) splashRetry.setVisibility(View.GONE);
         // Tiempo minimo en pantalla para que no parpadee.
         long wait = Math.max(0, 900 - (SystemClock.uptimeMillis() - splashStart));
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
@@ -2922,8 +3019,10 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }).start();
             }
-            boxContent.animate().alpha(1f).translationY(0f)
-                    .setDuration(400).setInterpolator(new DecelerateInterpolator()).start();
+            if (!chatOnly()) {
+                boxContent.animate().alpha(1f).translationY(0f)
+                        .setDuration(400).setInterpolator(new DecelerateInterpolator()).start();
+            }
         }, wait);
     }
 
@@ -3221,6 +3320,8 @@ private void refreshAppUpdateBtn() {
         refreshActionButtons();
         findViewById(R.id.boxAdvanced).setVisibility(
                 full ? View.GONE : (advancedOpen ? View.VISIBLE : View.GONE));
+        View logCard = findViewById(R.id.cardLog);
+        if (logCard != null) logCard.setVisibility(vis);
         fabControls.setVisibility(full && splashDone ? View.VISIBLE : View.GONE);
         if (full && splashDone) fabControls.post(() -> restoreFabPos());
         // Chat-first radical: la web solo existe a pantalla completa; en el

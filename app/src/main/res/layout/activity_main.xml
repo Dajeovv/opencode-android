@@ -261,6 +261,16 @@
                 android:text="Iniciando…"
                 android:textAppearance="?attr/textAppearanceBodySmall"
                 android:textColor="@color/splash_sub" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/splashRetry"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:minHeight="44dp"
+                android:text="Reintentar"
+                android:visibility="gone" />
         </LinearLayout>
     </FrameLayout>
 </FrameLayout>
