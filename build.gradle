@@ -1,3 +1,4 @@
+// Root build file for OpenCode Android 4.0.x.
 plugins {
     id 'com.android.application' version '8.5.2' apply false
 }

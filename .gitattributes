@@ -1,3 +1,4 @@
+# Normalize line endings; keep binary artifacts untouched.
 * text=auto
 *.apk binary
 *.png binary
