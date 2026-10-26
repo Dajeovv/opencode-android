@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/Dajeovv/opencode-android/releases/latest"><img src="https://img.shields.io/badge/version-4.0.1-7C5CFF?style=flat&amp;labelColor=21262d" alt="Version 4.0.1"></a>
+  <img src="https://img.shields.io/badge/opencode-1.19.4-30363d?style=flat&amp;labelColor=21262d" alt="opencode 1.19.4">
   <img src="https://img.shields.io/badge/android-8%2B-30363d?style=flat&amp;labelColor=21262d" alt="Android 8+">
   <img src="https://img.shields.io/badge/arch-arm64-30363d?style=flat&amp;labelColor=21262d" alt="arm64">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-30363d?style=flat&amp;labelColor=21262d" alt="MIT"></a>
