@@ -19,6 +19,12 @@ Not affiliated with, endorsed by, or sponsored by the upstream project.
 
 arm64-v8a · Android 8.0+ · ~133 MB
 
+## Demo
+
+<a href="docs/demo.gif"><img src="docs/demo.gif" alt="OpenCode Android demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
+
+*2× speed. opencode 1.19.4 running natively on the phone: ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root.*
+
 ## Screenshots
 
 | Chat | Sessions | Launch |
