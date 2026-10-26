@@ -1,25 +1,35 @@
-# OpenCode Android
+<p align="center">
+  <img src="docs/logo.png" alt="OpenCode Android" width="84">
+</p>
 
-**Unofficial Android client for [opencode](https://github.com/anomalyco/opencode).**
-Not affiliated with, endorsed by, or sponsored by the upstream project.
+<h1 align="center">OpenCode Android</h1>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-![Android 8+](https://img.shields.io/badge/Android-8%2B-blue)
-![arm64](https://img.shields.io/badge/arch-arm64-blue)
+<p align="center">The real coding agent, running natively on your phone.</p>
+
+<p align="center">
+  <a href="https://github.com/Dajeovv/opencode-android/releases/latest"><img src="https://img.shields.io/badge/version-4.0.1-7C5CFF?style=flat&amp;labelColor=21262d" alt="Version 4.0.1"></a>
+  <img src="https://img.shields.io/badge/android-8%2B-30363d?style=flat&amp;labelColor=21262d" alt="Android 8+">
+  <img src="https://img.shields.io/badge/arch-arm64-30363d?style=flat&amp;labelColor=21262d" alt="arm64">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-30363d?style=flat&amp;labelColor=21262d" alt="MIT"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Dajeovv/opencode-android/releases/latest"><img src="docs/download-apk.png" alt="Download OpenCode Android APK" width="200"></a>
+</p>
+
+<p align="center"><sub>OpenCodeAndroid-v4.0.1.apk &nbsp;·&nbsp; 142 MB &nbsp;·&nbsp; arm64 &nbsp;·&nbsp; Android 8.0+</sub></p>
+
+<p align="center">
+  <code>no Termux</code> <code>no PC</code> <code>no root</code>
+</p>
+
+<p align="center"><sub>Unofficial Android client for <a href="https://github.com/anomalyco/opencode">opencode</a>. Not affiliated with, endorsed by, or sponsored by the upstream project.</sub></p>
 
 > [!IMPORTANT]
 > **OpenCode Android 4.0.1 runs the agent entirely on your phone — no Termux, no PC, no root, no setup.**
 > One APK. Open it and the chat starts. The runtime and the full toolchain are already inside.
 
 [opencode](https://github.com/anomalyco/opencode) is a real coding agent, not just a chatbot. It can inspect and edit files, run commands, and — with wireless ADB — control apps and the UI, all from your phone.
-
-## Download
-
-**[Download OpenCode Android 4.0.1](https://github.com/Dajeovv/opencode-android/releases/latest)** — `OpenCodeAndroid-v4.0.1.apk`
-
-arm64-v8a · Android 8.0+ · ~133 MB
-
-## Demo
 
 <p align="center">
   <a href="docs/demo.gif"><img src="docs/demo.gif" alt="OpenCode Android demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
@@ -58,7 +68,7 @@ arm64-v8a · Android 8.0+ · ~133 MB
 
 - Android 8.0+ (API 26), **arm64**.
 - Internet on first run (npm dependencies and the package index) and for updates.
-- ~133 MB download; the toolbox takes ~200 MB more once unpacked.
+- ~142 MB download; the toolbox takes ~200 MB more once unpacked.
 - No Termux, no PC, no root.
 
 ## Installation
