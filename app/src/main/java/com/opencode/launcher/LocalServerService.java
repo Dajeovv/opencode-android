@@ -9,7 +9,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
@@ -58,23 +61,30 @@ public class LocalServerService extends Service {
         ToolboxServer.start(this);
         LocalToolbox.refreshShim(this);
         startForeground(NID, notification());
-        try {
-            LocalRuntime.start(this, BuildConfig.SERVER_PORT);
-        } catch (Exception e) {
-            NotificationManager nm =
-                    (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) {
-                nm.notify(NID, new NotificationCompat.Builder(this, CHANNEL)
-                        .setSmallIcon(android.R.drawable.stat_notify_error)
-                        .setContentTitle(ServerWatch.t(this, "OpenCode no arranc\u00f3", "OpenCode did not start"))
-                        .setContentText(String.valueOf(e.getMessage()))
-                        .setAutoCancel(true)
-                        .build());
+        // El arranque nativo hace health checks HTTP: nunca en el hilo
+        // principal (NetworkOnMainThreadException). El servicio ya es
+        // foreground, asi que puede esperar en segundo plano.
+        new Thread(() -> {
+            try {
+                LocalRuntime.start(getApplicationContext(), BuildConfig.SERVER_PORT);
+            } catch (Exception e) {
+                Log.w("OpenCodeLocal", "no se pudo arrancar el runtime: " + e, e);
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    NotificationManager nm =
+                            (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                    if (nm != null) {
+                        nm.notify(NID, new NotificationCompat.Builder(this, CHANNEL)
+                                .setSmallIcon(android.R.drawable.stat_notify_error)
+                                .setContentTitle(ServerWatch.t(this, "OpenCode no arranc\u00f3", "OpenCode did not start"))
+                                .setContentText(String.valueOf(e.getMessage()))
+                                .setAutoCancel(true)
+                                .build());
+                    }
+                    stopForeground(true);
+                    stopSelf();
+                });
             }
-            stopForeground(true);
-            stopSelf();
-            return START_NOT_STICKY;
-        }
+        }, "local-runtime-start").start();
         return START_STICKY;
     }
 

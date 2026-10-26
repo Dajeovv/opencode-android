@@ -175,6 +175,14 @@ public class MainActivity extends AppCompatActivity {
     private boolean shareSessionsLoading = false;
     private volatile int shareSessionsGeneration = 0;
     private ActivityResultLauncher<String> notifPermLauncher;
+    private ActivityResultLauncher<String> storagePermLauncher;
+    /** Compartir en espera de que el usuario conceda acceso a archivos. */
+    private PendingShare pendingStorageShare;
+    private String pendingStorageInstruction;
+    private String pendingStorageSessionId;
+    /** Ya se pidio el permiso legacy en este arranque (si lo deniega, se
+     *  comparte igual desde la carpeta privada de la app). */
+    private boolean storageShareAsked = false;
     private boolean notifPermTried = false;
     /** El aviso de notificaciones ya tiene respuesta (para encadenar el salto a
      *  Ajustes sin que los dos dialogos se pisen). */
@@ -393,6 +401,8 @@ public class MainActivity extends AppCompatActivity {
         web.clearCache(true);
         // Avisos del agente: la web cree que crea Notification; el puente avisa a Android.
         web.addJavascriptInterface(new NotifBridge(), "ocNotify");
+        // El interruptor de permisos de la web (Settings > General) manda al nuestro global.
+        web.addJavascriptInterface(new ConfigBridge(), "ocConfig");
         // Depuracion remota del WebView solo en APK debuggable (nunca en release).
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             WebView.setWebContentsDebuggingEnabled(true);
@@ -409,6 +419,9 @@ public class MainActivity extends AppCompatActivity {
                 bridgeNotifications();
                 redirectHelpToIssues();
                 rebrandDesktopToMobile();
+                shimAutoAccept();
+                hideShortcutsSettings();
+            shimUsageTap();
             }
 
             @Override
@@ -421,6 +434,9 @@ public class MainActivity extends AppCompatActivity {
                 bridgeNotifications();
                 redirectHelpToIssues();
                 rebrandDesktopToMobile();
+                shimAutoAccept();
+                hideShortcutsSettings();
+            shimUsageTap();
             }
 
             @Override
@@ -538,6 +554,23 @@ public class MainActivity extends AppCompatActivity {
                         askAllFilesAccess();
                     }
                 });
+        storagePermLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestPermission(), granted -> {
+                    // Concedido: Descargas publicas. Denegado: se comparte
+                    // igual desde la carpeta externa privada de la app.
+                    if (pendingStorageShare != null) {
+                        PendingShare share = pendingStorageShare;
+                        String instruction = pendingStorageInstruction;
+                        String sid = pendingStorageSessionId;
+                        pendingStorageShare = null;
+                        pendingStorageInstruction = null;
+                        pendingStorageSessionId = null;
+                        startShareSend(share, instruction, sid);
+                    } else if (!granted) {
+                        snack(T("Sin acceso a Descargas: se usa la carpeta privada",
+                                "No Downloads access: using the private folder"));
+                    }
+                });
         lockLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(), r -> {
                     if (r.getResultCode() == RESULT_OK) {
@@ -558,6 +591,20 @@ public class MainActivity extends AppCompatActivity {
                 && !getSharedPreferences("app", MODE_PRIVATE).getBoolean("notif_perm_asked", false)) {
             getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("notif_perm_asked", true).apply();
             notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS);
+        }
+        // Android 8-10: sin READ/WRITE_EXTERNAL_STORAGE el agente no puede
+        // leer /sdcard y el envio a Descargas falla. En Android 11+ lo cubre
+        // "todos los archivos"; en Android 10 se usa la carpeta privada si
+        // el sistema no concede almacenamiento legacy.
+        if (Build.VERSION.SDK_INT >= 23 && Build.VERSION.SDK_INT <= 29
+                && ContextCompat.checkSelfPermission(this,
+                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED
+                && !getSharedPreferences("app", MODE_PRIVATE)
+                        .getBoolean("storage_perm_asked", false)) {
+            getSharedPreferences("app", MODE_PRIVATE).edit()
+                    .putBoolean("storage_perm_asked", true).apply();
+            storagePermLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE);
         }
         // Runtime local: se pide tambien el acceso a archivos la primera vez, en
         // vez de dejar que el usuario lo descubra cuando algo falla. Se abre
@@ -679,6 +726,17 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         if (pendingStartAfterPerms && hasAllFilesAccess()) onAllFilesAccessReady();
+        // Si el usuario fue a Ajustes a dar acceso a archivos, el envio que
+        // quedo esperando continua solo al volver.
+        if (pendingStorageShare != null && hasShareStorage()) {
+            PendingShare share = pendingStorageShare;
+            String instruction = pendingStorageInstruction;
+            String sid = pendingStorageSessionId;
+            pendingStorageShare = null;
+            pendingStorageInstruction = null;
+            pendingStorageSessionId = null;
+            startShareSend(share, instruction, sid);
+        }
         // Runtime local: si el servidor no esta, se levanta solo al abrir la app
         // y se entra al chat en cuanto responde.
         if (LocalRuntime.available(this) && pendingShare == null && !serverOpen && !starting
@@ -737,10 +795,43 @@ public class MainActivity extends AppCompatActivity {
 
     /** Permiso externo con UNA linea corta (solo si el automatico dice "sin permiso"). */
     /** Pide a Android no matar a Termux (reemplazo sin root de Estabilizar). */
-    /** Interruptor PROPIO de permisos automaticos (el de la web de opencode no hace
-     *  nada en modo serve). Por defecto SI, como lo pidio el usuario. */
+    /** Interruptor PROPIO de permisos automaticos. Se aplica en el servidor
+     *  escribiendo la config global de opencode: {"*":"allow"} o sin regla. */
     private boolean autoPerm() {
         return getSharedPreferences("app", MODE_PRIVATE).getBoolean("auto_perm", true);
+    }
+
+    /** Aplica el auto-aceptar en el servidor (config global, en vivo). */
+    private void applyAutoPermissions(boolean allow) {
+        try {
+            JSONObject body = new JSONObject();
+            if (allow) {
+                body.put("permission", "allow");
+            } else {
+                body.put("permission", JSONObject.NULL);
+            }
+            httpJson("PATCH", "/global/config", body, 20000);
+            final String msg = T("Permisos auto aplicados: ", "Auto-approve applied: ")
+                    + (allow ? "allow" : "default");
+            runOnUiThread(() -> log(msg));
+        } catch (Exception e) {
+            final String msg = T("No se pudo aplicar permisos auto: ",
+                    "Could not apply auto-approve: ") + e.getMessage();
+            runOnUiThread(() -> log(msg));
+        }
+    }
+    /** Cambia el interruptor global: guarda, avisa y reinicia si el servidor corre. */
+    private void setAutoPerm(boolean now) {
+        getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("auto_perm", now).apply();
+        log(T("Interruptor permisos-auto: ", "Auto-approve switch: ") + (now ? "SÍ" : "NO"));
+        snack(now ? T("Permisos automáticos activados", "Auto-approve enabled")
+                : T("Permisos automáticos desactivados", "Auto-approve disabled"));
+        if (serverOpen) {
+            log(T("Reinicio para aplicar el cambio...", "Restarting to apply the change..."));
+            restartServer();
+        } else {
+            log(T("Se aplicará al arrancar el servidor.", "Will apply on server start."));
+        }
     }
     private String stopRuntime() {
         LocalServerService.stop(this);
@@ -836,6 +927,7 @@ public class MainActivity extends AppCompatActivity {
                 if (open) {
                     t.append("Puerto abierto; esperando el primer HTTP 200...\n");
                     httpOk = waitForHttp(45000);
+                    if (httpOk) applyAutoPermissions(autoPerm());
                 }
                 final boolean done = open;
                 final boolean httpOkF = httpOk;
@@ -1000,8 +1092,7 @@ public class MainActivity extends AppCompatActivity {
         ((MaterialButton) content.findViewById(R.id.shareCancel))
                 .setText(T("Cancelar", "Cancel"));
         ((TextView) content.findViewById(R.id.shareFootnote))
-                .setText(T("Los archivos se copian a Descargas/opencode-shares",
-                        "Files are copied to Downloads/opencode-shares"));
+                .setText(shareLocationLabel());
 
         content.findViewById(R.id.shareSessionRow)
                 .setOnClickListener(v -> showShareSessionPicker());
@@ -1341,18 +1432,30 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startShareSend(PendingShare share, String instruction, String targetSessionId) {
-        pendingShare = null;
-        if (!share.uris.isEmpty() && !hasAllFilesAccess()) {
-            snack(T("Activa 'Todos los archivos' para compartir archivos",
-                    "Enable 'All files' to share files"));
-            try {
-                startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:" + getPackageName())));
-            } catch (Exception e) {
-                log("Abre manual: Ajustes > Apps > OpenCode Android > Todos los archivos.");
+        if (!share.uris.isEmpty() && !hasShareStorage()) {
+            pendingStorageShare = share;
+            pendingStorageInstruction = instruction;
+            pendingStorageSessionId = targetSessionId;
+            if (Build.VERSION.SDK_INT >= 30) {
+                snack(T("Activa 'Todos los archivos' para compartir archivos",
+                        "Enable 'All files' to share files"));
+                try {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + getPackageName())));
+                } catch (Exception e) {
+                    log("Abre manual: Ajustes > Apps > OpenCode Android > Todos los archivos.");
+                }
+                return;
             }
-            return;
+            if (!storageShareAsked) {
+                // Android 8-10: se pide una vez; si lo deniega, el envio
+                // continua con la carpeta privada de la app.
+                storageShareAsked = true;
+                storagePermLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE);
+                return;
+            }
         }
+        pendingShare = null;
         enterChatLocked(() -> {
             shareOpening = true;
             setBusy(true);
@@ -1394,9 +1497,8 @@ public class MainActivity extends AppCompatActivity {
     private List<File> copyShareFiles(PendingShare share) throws Exception {
         List<File> out = new ArrayList<>();
         if (share.uris.isEmpty()) return out;
-        File dir = new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS), "opencode-shares");
-        if (!dir.exists() && !dir.mkdirs()) {
+        File dir = shareDir();
+        if (!dir.isDirectory() && !dir.mkdirs() && !dir.isDirectory()) {
             throw new Exception(T("no pude crear la carpeta de archivos", "could not create the files folder"));
         }
         cleanupOldShares(dir);
@@ -1623,6 +1725,24 @@ public class MainActivity extends AppCompatActivity {
             final String t = (title == null || title.isEmpty()) ? "opencode" : title;
             final String b = body == null ? "" : body;
             runOnUiThread(() -> notifyAgentDone(t, b));
+        }
+    }
+
+    /** Puente para el interruptor de permisos de la web. */
+    private class ConfigBridge {
+        @JavascriptInterface
+        public String autoAccept() {
+            return autoPerm() ? "1" : "0";
+        }
+
+        @JavascriptInterface
+        public void toggleAutoAccept() {
+            runOnUiThread(() -> setAutoPerm(!autoPerm()));
+        }
+
+        @JavascriptInterface
+        public void debug(String msg) {
+            Log.d("OpenCode", "auto-shim-js: " + msg);
         }
     }
 
@@ -1969,6 +2089,7 @@ public class MainActivity extends AppCompatActivity {
             }
             if (gen != openGen || isFinishing()) return;
             final boolean ready = waitForHttp(3000);
+            if (ready) applyAutoPermissions(autoPerm());
             runOnUiThread(() -> {
                 setBusy(false);
                 if (gen != openGen) return;
@@ -2401,9 +2522,6 @@ public class MainActivity extends AppCompatActivity {
         else
             menu.getMenu().add(0, 11, 5, T("Buscar actualización de la app", "Check app update"))
                     .setIcon(android.R.drawable.ic_popup_sync);
-        menu.getMenu().add(0, 6, 6, autoPerm()
-                ? T("Permisos auto: SÍ ✓", "Auto-approve: ON ✓")
-                : T("Permisos auto: NO", "Auto-approve: OFF")).setIcon(android.R.drawable.ic_menu_manage);
         menu.getMenu().add(0, 7, 7, T("Opciones", "Options")).setIcon(android.R.drawable.ic_menu_preferences);
         menu.getMenu().add(0, 8, 8, T("Consumo", "Usage")).setIcon(android.R.drawable.ic_menu_info_details);
         menu.getMenu().add(0, 9, 9, T("Reportar problema", "Report problem")).setIcon(android.R.drawable.ic_menu_send);
@@ -2435,20 +2553,6 @@ public class MainActivity extends AppCompatActivity {
             }
             if (id == 11) {
                 checkLauncherUpdate(true);
-                return true;
-            }
-            if (id == 6) {
-                boolean now = !autoPerm();
-                getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("auto_perm", now).apply();
-                log(T("Interruptor permisos-auto: ", "Auto-approve switch: ") + (now ? "SÍ" : "NO"));
-                snack(now ? T("Permisos automáticos activados", "Auto-approve enabled")
-                        : T("Permisos automáticos desactivados", "Auto-approve disabled"));
-                if (serverOpen) {
-                    log(T("Servidor abierto: reinicio para aplicar...", "Server open: restarting to apply..."));
-                    restartServer();
-                } else {
-                    log(T("Se aplicará al arrancar el servidor.", "Will apply on server start."));
-                }
                 return true;
             }
             if (id == 7) {
@@ -2582,6 +2686,30 @@ public class MainActivity extends AppCompatActivity {
                         snack(T("Root desactivado", "Root disabled"));
                         refresh.run();
                     }
+                });
+        addOptionRow(root,
+                T("Motor del servidor", "Server engine"),
+                T("Nativo: el servidor corre sin proot, mas rapido. Los comandos que"
+                        + " necesitan pkg/apt se ejecutan solos dentro de proot."
+                        + " Si el nativo no arranca, vuelve a proot automaticamente.",
+                        "Native: the server runs without proot, faster. Commands that"
+                        + " need pkg/apt run inside proot automatically."
+                        + " If native does not start, it falls back to proot."),
+                !LocalRuntime.nativeAvailable(this) ? T("Solo proot", "proot only")
+                        : LocalRuntime.nativeEnabled(this) ? T("Nativo", "Native")
+                        : T("proot", "proot"),
+                () -> {
+                    if (!LocalRuntime.nativeAvailable(this)) {
+                        snack(T("Esta instalacion no trae el runtime nativo",
+                                "This install has no native runtime"));
+                        return;
+                    }
+                    boolean now = !LocalRuntime.nativeEnabled(this);
+                    LocalRuntime.setNativeEnabled(this, now);
+                    snack(now ? T("Motor nativo: reiniciando", "Native engine: restarting")
+                            : T("Motor proot: reiniciando", "proot engine: restarting"));
+                    refresh.run();
+                    restartServer();
                 });
         addOptionRow(root,
                 T("Bloqueo de app", "App lock"),
@@ -3338,6 +3466,9 @@ private void refreshAppUpdateBtn() {
                 boostSidebarFooter();
                 redirectHelpToIssues();
                 rebrandDesktopToMobile();
+                shimAutoAccept();
+                hideShortcutsSettings();
+            shimUsageTap();
             }
             snack(T("Pantalla completa: el boton abre el menu", "Fullscreen: the button opens the menu"));
         }
@@ -3525,6 +3656,126 @@ private void refreshAppUpdateBtn() {
         }
     }
 
+    /** El switch "Auto-accept permissions" de opencode nace deshabilitado fuera
+     *  de una sesion (su logica exige ?dir= en la ruta). Lo sustituimos por uno
+     *  propio que manda al interruptor global del launcher. */
+    private void shimAutoAccept() {
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__ocAutoAcceptShim)return 'ya';"
+                    + "window.__ocAutoAcceptShim=true;"
+                    + "function on(){try{return String(ocConfig.autoAccept())==='1';}catch(e){return false;}}"
+                    + "function paint(sw,v){if(!sw)return;"
+                    + "if(v)sw.setAttribute('data-checked','');else sw.removeAttribute('data-checked');}"
+                    + "function apply(){"
+                    + "var row=document.querySelector('[data-action=settings-auto-accept-permissions]');"
+                    + "if(!row)return 0;"
+                    + "var old=row.querySelector('.oc-auto-shim');if(old)old.remove();"
+                    + "var sw=row.querySelector('[data-component=switch]');"
+                    + "if(!sw)return 0;"
+                    + "sw.style.display='';"
+                    + "sw.removeAttribute('data-disabled');"
+                    + "sw.removeAttribute('data-readonly');"
+                    + "sw.removeAttribute('aria-disabled');"
+                    + "sw.style.cursor='pointer';"
+                    + "paint(sw,on());"
+                    + "return 1;}"
+                    + "document.addEventListener('pointerdown',function(ev){"
+                    + "var row=document.querySelector('[data-action=settings-auto-accept-permissions]');"
+                    + "if(!row)return;"
+                    + "var sw=row.querySelector('[data-component=switch]');"
+                    + "var r=row.getBoundingClientRect();var x=ev.clientX,y=ev.clientY;"
+                    + "var sr=sw?sw.getBoundingClientRect():null;"
+                    + "var inSw=!!(sw&&(sw.contains(ev.target)||(sr&&x>=sr.left-12&&x<=sr.right+12&&y>=sr.top-12&&y<=sr.bottom+12)));"
+                    + "if(!inSw&&(x<r.left-6||x>r.right+6||y<r.top-6||y>r.bottom+6))return;"
+                    + "try{ocConfig.debug('toggle tap '+x.toFixed(0)+','+y.toFixed(0));}catch(e){}"
+                    + "ev.preventDefault();ev.stopPropagation();"
+                    + "var was=on();paint(sw,!was);"
+                    + "try{ocConfig.toggleAutoAccept();}catch(e){paint(sw,was);}"
+                    + "},true);"
+                    + "if(window.MutationObserver)new MutationObserver(apply)"
+                    + ".observe(document.body,{childList:true,subtree:true});"
+                    + "apply();setTimeout(apply,400);return 'auto-shim';}catch(e){return 'ERR:'+e;}})()",
+                    v -> Log.d("OpenCode", "auto-shim: " + v));
+        } catch (Exception e) {
+            Log.d("OpenCode", "auto-shim fallo: " + e.getMessage());
+        }
+    }
+
+    private void hideShortcutsSettings() {
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__ocHideShortcuts)return 'ya';"
+                    + "window.__ocHideShortcuts=true;"
+                    + "function hide(){var n=0,now=Date.now();"
+                    + "var all=document.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper]');"
+                    + "var s0=document.querySelectorAll('[data-variant=settings] [data-slot=tabs-v2-trigger-wrapper]');"
+                    + "if(!window.__ocHideTick||now-window.__ocHideTick>4000){window.__ocHideTick=now;"
+                    + "var vs=[];for(var q=0;q<all.length;q++)vs.push((all[q].getAttribute('data-value')||'-')+'='+(all[q].textContent||'').trim());"
+                    + "try{ocConfig.debug('tick all='+all.length+' set='+s0.length+' '+vs.join('|'));}catch(e){}}"
+                    + "var ws=document.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper][data-value=shortcuts]');"
+                    + "for(var i=0;i<ws.length;i++){"
+                    + "ws[i].style.display='none';ws[i].setAttribute('aria-hidden','true');n++;}"
+                    + "var cs=document.querySelectorAll('[data-slot=tabs-v2-content]');"
+                    + "for(var j=0;j<cs.length;j++){var h=cs[j].querySelector('h2');"
+                    + "var x=(h?h.textContent:cs[j].textContent)||'';"
+                    + "if(/keyboard shortcuts|atajos de teclado/i.test(x)){"
+                    + "cs[j].style.display='none';n++;}}"
+                    + "if(n===0&&(!window.__ocTxtT||now-window.__ocTxtT>2000)){window.__ocTxtT=now;"
+                    + "var dlg=document.querySelector('[role=dialog]')||document.body;"
+                    + "var tn=dlg.getElementsByTagName('*');"
+                    + "for(var m=0;m<tn.length;m++){var el=tn[m];"
+                    + "if(el.children.length===0){var tx=(el.textContent||'').trim();"
+                    + "if(tx==='Shortcuts'||tx==='Atajos'||tx==='Atajos de teclado'){"
+                    + "var w=el.closest('[data-slot=tabs-v2-trigger-wrapper]')||el.closest('[data-value]');"
+                    + "if(w){w.style.display='none';w.setAttribute('aria-hidden','true');n++;}}}}}"
+                    + "if(n>0){try{ocConfig.debug('hide '+n+' all='+all.length+' set='+s0.length);}catch(e){}}"
+                    + "return n;}"
+                    + "if(window.__ocHideTimer)clearInterval(window.__ocHideTimer);"
+                    + "window.__ocHideTimer=setInterval(hide,600);"
+                    + "var r=hide();return 'shortcuts:'+r;}catch(e){return 'ERR:'+e;}})()",
+                    v -> Log.d("OpenCode", "shortcuts-hide: " + v));
+        } catch (Exception e) {
+            Log.d("OpenCode", "shortcuts-hide fallo: " + e.getMessage());
+        }
+    }
+
+    /** En movil el tooltip de "context usage" no abre al tocar (Kobalte ignora
+     *  touch y el click abre el panel Context, que no existe por debajo de 768px).
+     *  Emulamos el hover de PC: pointerenter sintetico y bloqueo del click. */
+    private void shimUsageTap() {
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__ocUsageTap)return 'ya';"
+                    + "window.__ocUsageTap=true;"
+                    + "function find(el){"
+                    + "var tr=el&&el.closest?el.closest('[data-component=tooltip-v2-trigger]'):null;"
+                    + "if(!tr)return null;"
+                    + "if(!tr.querySelector('[data-component=progress-circle-v2],[data-component=progress-circle]'))return null;"
+                    + "return tr;}"
+                    + "function leave(tr){try{tr.dispatchEvent(new PointerEvent('pointerleave',{bubbles:false,cancelable:true,pointerType:'mouse',isPrimary:true}));}catch(e){}}"
+                    + "document.addEventListener('pointerdown',function(ev){"
+                    + "var tr=find(ev.target);"
+                    + "if(tr){ev.preventDefault();ev.stopPropagation();"
+                    + "if(window.__ocUsageOpen===tr)return;"
+                    + "window.__ocUsageOpen=tr;"
+                    + "setTimeout(function(){try{tr.dispatchEvent(new PointerEvent('pointerenter',{bubbles:false,cancelable:true,pointerType:'mouse',isPrimary:true}));}catch(e){}},30);"
+                    + "return;}"
+                    + "if(window.__ocUsageOpen){leave(window.__ocUsageOpen);window.__ocUsageOpen=null;}"
+                    + "},true);"
+                    + "document.addEventListener('click',function(ev){"
+                    + "var tr=find(ev.target);"
+                    + "if(tr){ev.preventDefault();ev.stopPropagation();}"
+                    + "},true);"
+                    + "return 'usage-ok';}catch(e){return 'ERR:'+e;}})()",
+                    v -> Log.d("OpenCode", "usage-tap: " + v));
+        } catch (Exception e) {
+            Log.d("OpenCode", "usage-tap fallo: " + e.getMessage());
+        }
+    }
     /** El Help de la web apunta al Discord de opencode (upstream): lo redirigimos
      *  a los issues del launcher. Observador + click delegado porque la SPA
      *  renderiza tarde y puede usar window.open en vez de href. */
@@ -3609,6 +3860,41 @@ private void refreshAppUpdateBtn() {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /** Acceso amplio a /sdcard: "todos los archivos" en Android 11+, o el
+     *  permiso legacy en Android 8-10. */
+    private boolean hasShareStorage() {
+        if (Build.VERSION.SDK_INT >= 30) return hasAllFilesAccess();
+        return ContextCompat.checkSelfPermission(this,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Descargas publicas si se pueden escribir; si no, la carpeta externa
+     *  privada de la app (el agente corre con el mismo UID y la lee igual). */
+    private File shareDir() {
+        if (hasShareStorage()) {
+            File pub = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), "opencode-shares");
+            // En Android 10 el permiso puede estar concedido sin que haya
+            // almacenamiento legacy: se comprueba creando la carpeta.
+            if (pub.isDirectory() || pub.mkdirs()) return pub;
+        }
+        File base = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (base == null) base = getFilesDir();
+        return new File(base, "opencode-shares");
+    }
+
+    private String shareLocationLabel() {
+        File downloads = Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS);
+        if (shareDir().getAbsolutePath().startsWith(downloads.getAbsolutePath())) {
+            return T("Los archivos se copian a Descargas/opencode-shares",
+                    "Files are copied to Downloads/opencode-shares");
+        }
+        return T("Los archivos se copian a la carpeta privada de la app (Android/data)",
+                "Files are copied to the app's private folder (Android/data)");
     }
 
     private java.io.File progressFile() {

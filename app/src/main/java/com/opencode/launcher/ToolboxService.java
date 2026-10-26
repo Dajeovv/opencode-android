@@ -99,17 +99,22 @@ public class ToolboxService extends Service {
             }
             final String err = error;
             Log.i(TAG, "instalacion terminada err=" + err);
+            running = false;
+            // Quitar primero la notificacion de primer plano: si no, la de
+            // resultado hereda el flag "ongoing" y no se puede descartar.
+            stopForeground(true);
             if (err == null) {
+                NotificationManager nm =
+                        (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) nm.cancel(NID);
                 // Se reinicia el servidor para que el sandbox coja el PATH nuevo.
                 LocalRuntime.stop();
                 LocalServerService.start(this);
-                update("Herramientas listas", 0, 0, false);
                 selfTest(this);
             } else {
-                update("Fallo: " + err, 0, 0, false);
+                // Error visible pero descartable; nunca deja un aviso fijo.
+                update("Fallo: " + err, 0, 0, false, false);
             }
-            running = false;
-            stopForeground(true);
             stopSelf();
         }, "toolbox-install").start();
         return START_NOT_STICKY;
@@ -156,12 +161,22 @@ public class ToolboxService extends Service {
     }
 
     private void update(String text, long done, long total, boolean indeterminate) {
+        update(text, done, total, indeterminate, true);
+    }
+
+    private void update(String text, long done, long total, boolean indeterminate,
+            boolean ongoing) {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) nm.notify(NID, notify(text, text, done, total, indeterminate));
+        if (nm != null) nm.notify(NID, notify(text, text, done, total, indeterminate, ongoing));
     }
 
     private Notification notify(String title, String text, long done, long total,
             boolean indeterminate) {
+        return notify(title, text, done, total, indeterminate, true);
+    }
+
+    private Notification notify(String title, String text, long done, long total,
+            boolean indeterminate, boolean ongoing) {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null && Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(CHANNEL,
@@ -180,7 +195,8 @@ public class ToolboxService extends Service {
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentIntent(pi)
                 .setOnlyAlertOnce(true)
-                .setOngoing(true);
+                .setOngoing(ongoing)
+                .setAutoCancel(!ongoing);
         if (total > 0) {
             b.setProgress(1000, (int) Math.min(1000, done * 1000 / total), false);
             b.setContentText(text + "  " + LocalToolbox.human(done) + " / "

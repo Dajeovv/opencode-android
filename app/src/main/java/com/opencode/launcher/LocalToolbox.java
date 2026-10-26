@@ -281,6 +281,14 @@ public final class LocalToolbox {
         File work = workDir(ctx);
         File debs = new File(work, "debs");
         if (!debs.isDirectory() && !debs.mkdirs()) throw new IOException("no debs dir");
+        // Restos de extracciones interrumpidas: se intentan limpiar, pero un
+        // fallo aqui ya no impide instalar (las nuevas usan nombre unico).
+        File[] stale = debs.listFiles();
+        if (stale != null) {
+            for (File f : stale) {
+                if (f.getName().startsWith("x-")) deleteTree(f);
+            }
+        }
         File pref = prefix(ctx);
         if (!pref.isDirectory() && !pref.mkdirs()) throw new IOException("no prefix dir");
 
@@ -291,7 +299,9 @@ public final class LocalToolbox {
         Set<String> now = new HashSet<>(installedPackages(ctx));
         File stage = new File(ctx.getCacheDir(), "tmp/toolbox-debs");
         deleteTree(stage);
-        if (!stage.mkdirs()) throw new IOException("no staging dir");
+        if (!stage.mkdirs() && !stage.isDirectory()) {
+            throw new IOException("no staging dir: " + stage.getName());
+        }
         for (Pkg pkg : plan) {
             if (p != null) p.onStep("Instalando " + pkg.name + " " + pkg.version);
             File deb = new File(stage, pkg.name + ".deb");
@@ -339,6 +349,14 @@ public final class LocalToolbox {
         File work = workDir(ctx);
         File debs = new File(work, "debs");
         if (!debs.isDirectory() && !debs.mkdirs()) throw new IOException("no debs dir");
+        // Restos de extracciones interrumpidas: se intentan limpiar, pero un
+        // fallo aqui ya no impide instalar (las nuevas usan nombre unico).
+        File[] stale = debs.listFiles();
+        if (stale != null) {
+            for (File f : stale) {
+                if (f.getName().startsWith("x-")) deleteTree(f);
+            }
+        }
         File pref = prefix(ctx);
         if (!pref.isDirectory() && !pref.mkdirs()) throw new IOException("no prefix dir");
         Map<String, String> versions = readBundledManifest(ctx);
@@ -359,7 +377,9 @@ public final class LocalToolbox {
         // Fase 2: dpkg de verdad con todos los paquetes.
         File stage = new File(ctx.getCacheDir(), "tmp/toolbox-debs");
         deleteTree(stage);
-        if (!stage.mkdirs()) throw new IOException("no staging dir");
+        if (!stage.mkdirs() && !stage.isDirectory()) {
+            throw new IOException("no staging dir: " + stage.getName());
+        }
         for (String name : names) {
             if (!name.endsWith(".deb")) continue;
             copyAsset(ctx, stage, name);
@@ -771,9 +791,14 @@ public final class LocalToolbox {
 
     /** Desempaqueta un .deb (ar) y deja su contenido dentro del prefijo. */
     static void extractDeb(File deb, File pref) throws IOException {
-        File tmp = new File(deb.getParentFile(), "x-" + deb.getName());
+        // Nombre unico: si un intento anterior dejo la carpeta a medias (o el
+        // proceso murio durante la extraccion), no bloquea este intento.
+        File tmp = new File(deb.getParentFile(),
+                "x-" + deb.getName() + "-" + System.nanoTime());
         deleteTree(tmp);
-        if (!tmp.mkdirs()) throw new IOException("no tmp dir");
+        if (!tmp.mkdirs() && !tmp.isDirectory()) {
+            throw new IOException("no tmp dir: " + tmp.getName());
+        }
         File data = extractArMember(deb, "data.tar", tmp);
         if (data == null) throw new IOException("deb sin data.tar: " + deb.getName());
         int rc = runTar(data, tmp);
@@ -986,12 +1011,21 @@ public final class LocalToolbox {
     }
 
     static void deleteTree(File f) {
-        if (f == null || !f.exists()) return;
-        if (f.isDirectory() && !isSymlink(f)) {
+        if (f == null) return;
+        // Primero los enlaces: un enlace roto "no existe" para File.exists(),
+        // y si se ignora deja la carpeta padre sin poder borrarse.
+        if (isSymlink(f)) {
+            if (!f.delete()) Log.w(TAG, "no se pudo borrar " + f.getAbsolutePath());
+            return;
+        }
+        if (!f.exists()) return;
+        if (f.isDirectory()) {
             File[] kids = f.listFiles();
             if (kids != null) for (File k : kids) deleteTree(k);
         }
-        f.delete();
+        if (!f.delete() && f.exists()) {
+            Log.w(TAG, "no se pudo borrar " + f.getAbsolutePath());
+        }
     }
 
     /** Espacio libre en el almacenamiento de la app (bytes). */

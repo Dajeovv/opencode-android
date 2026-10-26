@@ -1,0 +1,9 @@
+#!/system/bin/sh
+# Trampolin estable dentro del directorio nativo del APK (unica ruta
+# ejecutable sin root). El servidor lo usa como SHELL; el trabajo real lo
+# hace el envoltorio generado por CommandResolver en el prefijo de la app.
+W="${OPENCODE_WRAPPER:-$TERMUX_HOME/bin/oc-shell}"
+if [ -f "$W" ]; then
+  exec /system/bin/sh "$W" "$@"
+fi
+exec /system/bin/sh "$@"

@@ -3,10 +3,13 @@
 > [!IMPORTANT]
 > ## Next beta — opencode now runs inside the app
 >
-> The current release still installs opencode inside **Termux**. The **Next** beta
-> changes that: the app ships the opencode binary and the whole Termux
-> toolchain, and runs the agent on its own — **no Termux, no root, no setup**.
+> The stable release still installs opencode inside **Termux**. The **Next** beta
+> changes that: the app ships the opencode binary and the Termux toolchain, and
+> runs the agent on its own — **no Termux, no root, no setup**.
 >
+> - **Beta.11** uses the bundled **native runtime**: `git`, `python3`, `grep`,
+>   `find` and the rest of the core tools run directly. proot is only used for
+>   `pkg`/`apt` and scripts that need the Termux prefix.
 > - The app **is** the chat: open it and the server starts by itself, with the
 >   splash showing until it answers. There is no home panel any more.
 > - `git`, `python3` + `pip3`, `node`, `ssh`, `make`, `curl`, `wget` and the real `apt`/`dpkg`/`pkg` are already installed — and `pkg install <anything>` works for the rest of the Termux catalogue.
@@ -15,6 +18,9 @@
 >
 > **[Download the beta](https://github.com/Dajeovv/opencode-android/releases)** ·
 > arm64 only, Android 8+ · installs as a separate app, next to this one.
+>
+> Verified on Android 15 arm64. Android 8-10 storage (legacy permission or the
+> app's private folder) is implemented but has not been tested on real hardware.
 >
 > The stable 4.0 release will follow. Nothing changes for current users until then.
 
@@ -36,9 +42,9 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 
 ## Features
 
-- **One-tap chat**: starts `opencode serve` in Termux and opens the local UI (`http://127.0.0.1:4096`).
+- **One-tap chat**: starts `opencode serve` inside the app (Next beta) or in Termux (stable) and opens the local UI.
 - **Device control over wireless ADB (optional)**: with Android 11+ wireless debugging paired inside Termux and `android-tools` installed, opencode can launch apps, tap, type, read the UI and take screenshots — no PC (OEM support varies).
-- **First-run wizard**: guides you with or without root (installs Termux, configures permissions, installs opencode).
+- **First-run wizard**: the stable app guides you with or without root (installs Termux, configures permissions, installs opencode). The Next beta needs no wizard: it unpacks its toolbox and starts.
 - **Share to opencode**: send text or files from any app; check the preview, choose a new or existing conversation, add an optional instruction, and it opens that chat with the content.
 - **Background opencode updates**: downloads with real MB progress, no frozen screen; auto-restarts when done.
 - **Self-updating bundled runtime**: tap the opencode update notification to download and install the official arm64 release in place, with checksum verification and automatic rollback.
@@ -48,9 +54,10 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 
 ## Requirements
 
-- Android 8.0+ (API 26). Tested on Android 15.
-- [Termux](https://github.com/termux/termux-app) (the app downloads it if missing).
-- Internet connection for the first install and updates.
+- Android 8.0+ (API 26), arm64. Tested on Android 15.
+- **Stable app**: [Termux](https://github.com/termux/termux-app) (the app downloads it if missing).
+- **Next beta**: no Termux. The app ships its own runtime and toolbox.
+- Internet connection for the first run (npm dependencies and the apt index) and for updates.
 
 > Trying the [Next beta](#opencode-android)? Termux is **not** needed there: the
 > agent and its toolbox run inside the app.
@@ -106,6 +113,10 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 2. Open the app and follow the wizard (it will ask for 2–3 permissions).
 3. Tap **Start and open**.
 
+> **Next beta:** there is no wizard. Install the APK, open it, grant "All files
+> access" when asked, and the app unpacks its toolbox and opens the chat by
+> itself.
+
 > On some phones you must enable "Install unknown apps" and "All files access" in Settings; the app takes you there.
 
 ## Updates
@@ -118,10 +129,13 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 
 ## Permissions & privacy
 
-- **All files access**: reads the installed version and Termux progress markers, and copies files you share to `Downloads/opencode-shares`. The app opens this permission page by itself the first time it needs it.
+- **All files access** (Android 11+): lets the agent read `/sdcard`, checks the installed version and Termux progress markers, and copies files you share to `Downloads/opencode-shares`. The app opens this permission page by itself the first time it needs it.
+- **Storage** (Android 8-10): `READ/WRITE_EXTERNAL_STORAGE` for the same access. If Android 10 does not grant legacy storage, shared files go to the app's private external folder (`Android/data/com.opencode.launcher.next/files/Download/opencode-shares`), which the agent can still read. Sharing asks once and retries automatically.
+- **Wi-Fi state**: reads transport, IP addresses, DNS, routes, RSSI and link speed through Android APIs. SSID and BSSID stay hidden because the app does **not** request location.
 - **Install unknown apps**: installs the APK downloaded from a Release.
 - **Notifications**: update and watchdog notices.
-- Nothing leaves your phone except public queries to `api.github.com` (versions) and opencode installer downloads. Diagnostics mask tokens (`sk-***`, `ghp_***`, `Bearer ***`) before display.
+- **Network**: the app itself only contacts `api.github.com` (versions and the official opencode installer) and the Termux/npm mirrors used to build the toolbox on first run. Prompts and code you send go to the model provider you configure (the default is the free `opencode.ai` model). There is no analytics or telemetry. Diagnostics mask tokens (`sk-***`, `ghp_***`, `Bearer ***`) before display.
+- **Root is optional and diagnostic**: nothing in the beta requires it. `dumpsys wifi`, `settings` and `ip`/`ifconfig`/`netstat` still need root on a normal app sandbox; the app uses Android APIs instead.
 
 ## Build from source
 
@@ -137,15 +151,18 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 
 See the [Next beta notice at the top](#opencode-android) for the short version.
 
-`v4.0.0-beta.5` is the first **Next** build with a real package manager inside the
-app: opencode runs inside the app (proot, no Termux, no root), the app starts the
-server by itself and lands straight in the chat, the Termux toolchain is already
-installed, and tapping the opencode update notification downloads, verifies and
-installs the official binary in place.
+`v4.0.0-beta.11` is the current **Next** build: opencode runs inside the app on
+the bundled **native runtime** (no Termux, no root), the app starts the server by
+itself and lands straight in the chat, the Termux toolchain is already installed,
+and tapping the opencode update notification downloads, verifies and installs the
+official binary in place. proot remains only for `pkg`/`apt` and scripts that
+need the Termux prefix.
 
 - Package: `com.opencode.launcher.next` (it installs next to the current app).
 - Download: [OpenCode Android releases](https://github.com/Dajeovv/opencode-android/releases) (grab the newest pre-release APK).
-- arm64 only, Android 8+, ~125 MB to download and ~200 MB more once the toolbox is unpacked.
+- arm64 only, Android 8+, ~133 MB to download and ~200 MB more once the toolbox is unpacked.
+- Bundled opencode: `1.19.3`. Local port: `4098`.
+- The UI is Spanish or English, following the system language; light/dark follows the system theme.
 
 ### Where the controls are
 
@@ -188,10 +205,22 @@ They answer with JSON, exactly like their Termux:API counterparts. Only
 permissions that are harmless are exposed on purpose: SMS, contacts, camera,
 microphone, location, the notification shade and the fingerprint are left out.
 
+`termux-wifi-connectioninfo` now uses `ConnectivityManager`, `LinkProperties`,
+`NetworkCapabilities` and `WifiManager`: it returns the active transport,
+IPv4/IPv6 addresses, DNS servers, routes, gateway, Wi-Fi RSSI/signal level,
+frequency, link speed, Wi-Fi standard, DHCP data and every visible network.
+SSID/BSSID are omitted without location permission; this is intentional.
+
 ### How it works
 
-- The opencode binary is embedded in the APK and executed under **proot**, with no
-  Termux and no root.
+- The opencode binary is embedded in the APK and runs as a **native ARM64
+  process**, with no Termux and no root. Core tools (`git`, `python`, `grep`,
+  `find`…) are ELF binaries from the Termux prefix launched through Android's
+  `/system/bin/linker64`; `LD_LIBRARY_PATH` is scoped to those launches so
+  system binaries keep loading their own libraries.
+- `proot` is still bundled and used only for `pkg`/`apt`/`dpkg` and for scripts
+  that expect the Termux prefix at `/data/data/com.termux/files/usr`. If the
+  native runtime fails to become healthy, the app falls back to proot.
 - The Termux packages are built with the absolute prefix
   `/data/data/com.termux/files/usr`, so the app mounts its own prefix there inside
   the sandbox: the tools see exactly the paths they expect.
@@ -200,9 +229,16 @@ microphone, location, the notification shade and the fingerprint are left out.
 
 ## Known limitations
 
+- **Test coverage**: verified on one device only — a Motorola moto g54 5G, Android 15, arm64. Android 8-14, other OEMs, tablets and 16 KB-page devices are untested. The APK and bundled libraries are 16 KB-aligned, but there is no 16 KB hardware evidence yet.
+- **Android 8-10 storage**: sharing uses `WRITE_EXTERNAL_STORAGE` when granted; if Android 10 keeps scoped storage, files fall back to the app's private external folder. The path is implemented and compiles, but has not been exercised on real Android 8-10 hardware.
+- **Wi-Fi details**: SSID and BSSID require location permission, which the app deliberately does not request. Transport, IPs, DNS, routes, gateway, RSSI and link speed are available.
+- **Root-only commands**: `dumpsys wifi`, `settings get/put` and `ip`/`ifconfig`/`netstat` fail in the normal app sandbox. Use the Android APIs exposed through `termux-wifi-connectioninfo`, or root if the phone has it.
+- **Memory**: on the test phone the app uses ~205 MB RSS and the server ~600 MB. Low-RAM phones (4 GB or less) may see the server killed in the background.
+- **First run needs internet**: the server installs `@opencode-ai/plugin`, `zod` and the provider SDK, and `apt-get update` fills the package index. Offline first runs are not supported.
 - On some phones the app freezer can pause long background downloads (see the watchdog interval).
 - The direct "install unknown apps" screen does not exist on all vendors: the app falls back to the app-details page, where the same toggle lives.
-- File sharing accepts up to 10 files (50 MB each, 100 MB total). Copies stay in `Downloads/opencode-shares` and are cleaned after 7 days.
+- File sharing accepts up to 10 files (50 MB each, 100 MB total). Copies stay in `Downloads/opencode-shares` (or the app's private folder on Android 10) and are cleaned after 7 days.
+- Distribution is GitHub Releases only for now; the app is not published on Google Play.
 
 ## Contributing
 
