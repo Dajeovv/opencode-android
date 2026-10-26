@@ -21,15 +21,26 @@ arm64-v8a · Android 8.0+ · ~133 MB
 
 ## Demo
 
-<a href="docs/demo.gif"><img src="docs/demo.gif" alt="OpenCode Android demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
+<p align="center">
+  <a href="docs/demo.gif"><img src="docs/demo.gif" alt="OpenCode Android demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
+</p>
 
-*opencode 1.19.4 running natively on the phone: ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root.*
+<p align="center"><em>opencode 1.19.4 running natively on the phone: ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root.</em></p>
 
 ## Screenshots
 
-| Chat | Sessions | Launch |
-|---|---|---|
-| ![Chat](docs/chat.png) | ![Sessions](docs/sessions.png) | ![Launch](docs/splash.png) |
+<table align="center">
+  <tr>
+    <th align="center">Chat</th>
+    <th align="center">Sessions</th>
+    <th align="center">Launch</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/chat.png" alt="Chat" width="250"></td>
+    <td align="center"><img src="docs/sessions.png" alt="Sessions" width="250"></td>
+    <td align="center"><img src="docs/splash.png" alt="Launch" width="250"></td>
+  </tr>
+</table>
 
 ## What you get
 
