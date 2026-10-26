@@ -23,7 +23,7 @@ arm64-v8a · Android 8.0+ · ~133 MB
 
 <a href="docs/demo.gif"><img src="docs/demo.gif" alt="OpenCode Android demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
 
-*2× speed. opencode 1.19.4 running natively on the phone: ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root.*
+*opencode 1.19.4 running natively on the phone: ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root.*
 
 ## Screenshots
 
@@ -159,16 +159,6 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 - **The server stops in the background**: disable battery optimization for OpenCode Android and keep the watchdog enabled.
 - **`dumpsys`/`ip` fail**: expected without root. Use the Android APIs through `termux-wifi-connectioninfo`.
 - **Low memory**: close other apps; the agent and server are heavy.
-
-## Build from source
-
-- JDK 17, Android SDK with `compileSdk 34`; the repo ships the Gradle wrapper (Gradle 8.7 + Android Gradle Plugin 8.5.2).
-- Create `local.properties` with `sdk.dir=/path/to/your/sdk` (never committed).
-- Debug: `./gradlew :app:assembleDebug` (the first run downloads dependencies).
-- Signed release: `./gradlew :app:assembleRelease` (needs `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`; never commit it — keep the `.jks` and passwords outside the repo).
-- Standalone 4.0.1 APK: `./gradlew :app:assembleBeta` — the Gradle flavor is still named `beta` for history; the APK is version 4.0.1, package `com.opencode.launcher.next`, port 4098, signed with the release key.
-- The embedded opencode runtime (`app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so`, ~186 MB) is **not in the repository**: it exceeds git's 100 MB per-file limit. It ships inside the published APK. To build, put the binary there first (take it from a published APK).
-- The toolbox packages (`app/src/main/assets/toolbox/`, ~50 MB of `.deb`) are not in the repository either. They come from the official package mirror (`packages.termux.dev`, `binary-aarch64`): download the closure of `git python python-pip python-ensurepip-wheels nodejs openssh make curl wget bash coreutils` and save each as `<package name>.deb`, plus `packages.txt` with `name<TAB>version` lines.
 
 ## Contributing
 
