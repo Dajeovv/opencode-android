@@ -23,6 +23,13 @@ The debug APK lands in `app/build/outputs/apk/debug/`. Install it with
 `adb install -r app/build/outputs/apk/debug/app-debug.apk` to test on a device
 or emulator; the first run downloads dependencies.
 
+To build the standalone 4.0.0 APK (package `com.opencode.launcher.next`), use the
+`beta` flavor — the name is historical:
+
+```sh
+./gradlew :app:assembleBeta
+```
+
 Run the build before submitting:
 
 ```sh
@@ -40,8 +47,9 @@ Run the build before submitting:
 ## Publishing a version (maintainers)
 
 1. Bump `versionCode`/`versionName` in `app/build.gradle`.
-2. Build the APK, create a GitHub **Release** tagged `vX.Y` (e.g. `v3.119`) and attach the `.apk`. The app detects it on its own (it uses the first `.apk` asset).
-3. Do not mark non-version releases (e.g. video assets) as *Latest*: the in-app updater reads `releases/latest` and expects the `.apk`.
+2. Build the APK with `./gradlew :app:assembleBeta` (the standalone 4.0.0 app).
+3. Create a GitHub **Release** tagged `vX.Y.Z` (e.g. `v4.0.0`) and attach the `.apk` plus `SHA256SUMS.txt`. The app detects it on its own (it uses the first `.apk` asset).
+4. Do not mark non-version releases (e.g. video assets) as *Latest*: the in-app updater reads `releases/latest` and expects the `.apk`.
 
 ## Licensing of contributions
 

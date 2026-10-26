@@ -12,10 +12,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Community health files: CONTRIBUTING, CODE_OF_CONDUCT, SECURITY and AUTHORSHIP.
 - GitHub templates (issue forms, PR template, Dependabot) and a CI workflow that builds the debug APK.
 
+### Changed
+
+- README and project docs now cover only the standalone 4.0.0 app; the old
+  setup guides were removed and the changelog starts at 4.0.0.
+
 ## [4.0.0] - 2026-10-25
 
 First 4.0 release. Standalone package `com.opencode.launcher.next` (versionCode
-171); it installs next to the 3.x app and does not replace it.
+171), with the agent running natively inside the app.
 
 ### Added
 
@@ -43,16 +48,3 @@ First 4.0 release. Standalone package `com.opencode.launcher.next` (versionCode
 - SSID/BSSID require location, which the app does not request. `dumpsys wifi`, `settings` and `ip`/`ifconfig`/`netstat` still need root.
 - First run needs internet (npm dependencies + apt index); low-RAM phones may see the server killed in the background.
 - GitHub Releases only; not published on Google Play.
-
-## [3.122] - 2026-10-16
-
-First public release.
-
-### Added
-
-- One-tap chat: starts `opencode serve` in Termux and opens the local UI (`http://127.0.0.1:4096`).
-- First-run wizard, with or without root: installs Termux, configures permissions, installs opencode.
-- Background opencode updates with real MB progress and automatic restart when done.
-- Update notifications for opencode and for the launcher itself (daily background check).
-- Optional watchdog: notifies or restarts when the server goes down; boot start.
-- Bilingual ES/EN, following the system light/dark theme.

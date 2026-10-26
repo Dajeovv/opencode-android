@@ -19,9 +19,13 @@ labels: bug
 **Environment**
 - Device:
 - Android version:
-- App version:
-- Termux / opencode version (if relevant):
-- Root: yes / no
+- App version (4.0.0):
+- opencode version (controls menu → Log):
+- Installation: fresh / updated
+
+**Logs**
+
+Paste the relevant lines from the controls menu → **Log**.
 
 **Acceptance criteria**
 

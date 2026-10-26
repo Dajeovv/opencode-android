@@ -1,6 +1,6 @@
 # Authorship
 
-*Last updated: 2026-10-16*
+*Last updated: 2026-10-25*
 
 This file documents the **human creative contribution** behind OpenCode Android.
 Copyright protection for AI-assisted works depends on human authorship and
@@ -17,25 +17,30 @@ Contact: Dajeovv@users.noreply.github.com
 
 - Chose **native Android (Java, launcher with a single main activity)** over
   Flutter or hybrid frameworks, for footprint and direct startup.
-- Chose to orchestrate **Termux + `opencode serve` bound to `127.0.0.1:4096`**
-  and render the local UI in the app's WebView — rather than embedding a server
-  or requiring root. The app works with or without root.
+- Chose to **embed the opencode runtime and an aarch64 toolchain in the APK**
+  and run the agent as a **native ARM64 process** — no Termux, no root, no PC.
+  proot is kept only for package management (`pkg`/`apt`/`dpkg`) and scripts
+  that expect the conventional prefix, with a native-to-proot fallback.
 - Chose **self-hosted distribution with in-app updates from GitHub Releases**;
   rejected Google Play (prohibits self-update) and the official F-Droid
   repository (requires building from their own recipes).
-- Chose to **simplify first-run onboarding to a 3-step wizard** after the
-  original flow proved too heavy.
+- Chose a **chat-first app**: no home panel and no setup wizard; opening the app
+  starts the server and lands directly in the chat.
 - Chose a **bilingual ES/EN UI** following the system light/dark theme.
 
-Evidence: README.md, CHANGELOG.md, release v3.122, and the project's
+Evidence: README.md, CHANGELOG.md, release v4.0.0, and the project's
 development records.
 
 ## Exercise of Judgment
 
-- **Rejected and redesigned the opencode update downloader** after it froze the
-  UI; enforced real MB-progress feedback as the quality bar.
-- **Rejected root-dependent messaging**: the launcher must work with or without
-  root, so no root warnings are surfaced to users.
+- **Rejected a proot-first runtime** after the native path proved healthy;
+  kept proot as a fallback for package management and prefix scripts.
+- **Scoped `LD_LIBRARY_PATH`** to `linker64` launches so system binaries such as
+  `dumpsys`, `pm`, and `cmd` load their own libraries.
+- **Rejected root-dependent messaging**: nothing in 4.0.0 requires root, so no
+  root warnings are surfaced to users.
+- **Redesigned the opencode update downloader** after it froze the UI; enforced
+  real MB-progress feedback, checksum verification, and automatic rollback.
 - **Enforced presentation quality**: rejected the first screenshots for the
   README until the set was clean and representative.
 - **Enforced a publication quality gate**: scanned the repository for secrets
@@ -44,24 +49,22 @@ development records.
 
 ## Goal Setting & Direction
 
-- **Problem**: getting opencode running on Android takes many manual steps
-  (install Termux, grant permissions, install opencode, start the server); the
-  launcher reduces this to one tap — install, start, update.
-- **Intended users**: people who use opencode (and Termux) and want their
-  sessions from their phone.
-- **Goals**: one-tap chat; guided setup with or without root; background
-  updates with real progress; update notifications for both opencode and the
-  launcher itself.
-- **Non-goals**: a mobile code editor, multi-provider support, Google Play
-  distribution.
+- **Problem**: running opencode on Android used to take many manual steps and a
+  PC or Termux; OpenCode Android reduces this to install, open, and chat.
+- **Intended users**: people who want a real coding agent on their phone,
+  without a PC, a second app, or root.
+- **Goals**: one APK; zero setup; native performance; a full toolchain already
+  installed; background updates with real progress; update notifications for
+  both opencode and the launcher.
+- **Non-goals**: a mobile code editor, Google Play distribution.
 
 ## Art Direction
 
-- Simple native launcher UI (panel / sessions / chat entry points) with
-  restrained icons and tone.
+- Chat-first native UI with no home panel; a controls menu for the server log,
+  restart/stop, updates, auto-approve, options, and diagnostics.
 - Light/dark theme following the system; ES/EN copy written for the project.
 - Screenshots authored for `docs/` and the README — selection and composition
-  of the four representative screens (launch, panel, sessions, chat).
+  of the representative screens (launch, chat, sessions).
 
 ## AI Implementation
 
