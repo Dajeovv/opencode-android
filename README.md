@@ -119,7 +119,7 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 - The opencode binary is embedded in the APK and runs as a **native ARM64 process**. Core tools (`git`, `python`, `grep`, `find`…) are ELF binaries from the bundled prefix, launched through Android's `/system/bin/linker64`.
 - `LD_LIBRARY_PATH` is scoped to those launches, so `dumpsys`, `pm`, `cmd`, and other system binaries load their own libraries.
 - `proot` is bundled only for `pkg`/`apt`/`dpkg` and for scripts that expect the conventional prefix. If the native runtime does not become healthy, the app falls back to proot.
-- The bundled packages were built for the conventional `/data/data/com.termux/files/usr` prefix, so the app mounts its own prefix there inside the sandbox. The tools see the paths they expect.
+- The bundled packages expect the conventional prefix path, so the app mounts its own prefix there inside the sandbox. The tools see the paths they expect.
 - The packages are registered with the real dpkg database, and `apt-get update` fills the index, so `apt` and `pkg` behave normally.
 
 ## Permissions & privacy
@@ -134,11 +134,11 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 
 ## Known limitations
 
-- **Test coverage**: verified on one device — a Motorola moto g54 5G, Android 15, arm64. Android 8-14, other OEMs, tablets, and 16 KB-page devices are untested. The APK and libraries are 16 KB-aligned, but there is no 16 KB hardware evidence yet.
+- **Test coverage**: verified on one physical Android 15 arm64 device. Android 8-14, other OEMs, tablets, and 16 KB-page devices are untested. The APK and libraries are 16 KB-aligned, but there is no 16 KB hardware evidence yet.
 - **Android 8-10 storage**: the legacy-permission and private-folder fallback compiles but has not run on real Android 8-10 hardware.
 - **Wi-Fi details**: SSID/BSSID require location, which the app deliberately does not request.
 - **Root-only commands**: `dumpsys wifi`, `settings`, and `ip`/`ifconfig`/`netstat` fail in the app sandbox. Use `termux-wifi-connectioninfo` or root if the phone has it.
-- **Memory**: on the test phone the app uses ~205 MB RSS and the server ~600 MB. Phones with 4 GB or less may see the server killed in the background.
+- **Memory**: the app and server are memory-heavy; phones with 4 GB or less may see the server killed in the background.
 - **First run needs internet**: npm dependencies and the package index are downloaded then. Offline first runs are not supported.
 - **Background limits**: some vendors freeze long background downloads; the watchdog and battery settings help.
 - **Install unknown apps**: the direct settings screen is not available on every vendor; the app falls back to the app-details page.

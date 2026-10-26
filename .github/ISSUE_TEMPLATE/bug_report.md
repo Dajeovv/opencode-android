@@ -25,7 +25,8 @@ labels: bug
 
 **Logs**
 
-Paste the relevant lines from the controls menu → **Log**.
+Paste the relevant lines from the controls menu → **Log**. Remove tokens,
+personal paths, and any private data first.
 
 **Acceptance criteria**
 

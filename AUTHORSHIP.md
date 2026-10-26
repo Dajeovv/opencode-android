@@ -10,8 +10,8 @@ machine-assisted implementation. See [Why This File Exists](#why-this-file-exist
 
 ## Human Author
 
-**Dajeovv** (Latin America) — Architecture, design, product decisions, and creative direction.
-Contact: Dajeovv@users.noreply.github.com
+**Dajeovv** — Architecture, design, product decisions, and creative direction.
+Contact: [@Dajeovv](https://github.com/Dajeovv)
 
 ## Decisions
 
@@ -89,7 +89,7 @@ review, or human authorship documentation:
   providers; where provider terms grant the user ownership of outputs, that
   does not replace the human-authorship record above.
 
-The project is operated from Latin America; this record documents authorship to
+The project is operated independently; this record documents authorship to
 the strictest commonly applied standard — the U.S. human-authorship bar, under
 which copyright protects human contributions (selection, arrangement,
 coordination, and creative modification) and does not extend to purely
