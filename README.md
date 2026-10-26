@@ -8,14 +8,14 @@ Not affiliated with, endorsed by, or sponsored by the upstream project.
 ![arm64](https://img.shields.io/badge/arch-arm64-blue)
 
 > [!IMPORTANT]
-> **OpenCode Android 4.0.0 runs the agent entirely on your phone — no Termux, no PC, no root, no setup.**
+> **OpenCode Android 4.0.1 runs the agent entirely on your phone — no Termux, no PC, no root, no setup.**
 > One APK. Open it and the chat starts. The runtime and the full toolchain are already inside.
 
 [opencode](https://github.com/anomalyco/opencode) is a real coding agent, not just a chatbot. It can inspect and edit files, run commands, and — with wireless ADB — control apps and the UI, all from your phone.
 
 ## Download
 
-**[Download OpenCode Android 4.0.0](https://github.com/Dajeovv/opencode-android/releases/latest)** — `OpenCodeAndroid-v4.0.0.apk`
+**[Download OpenCode Android 4.0.1](https://github.com/Dajeovv/opencode-android/releases/latest)** — `OpenCodeAndroid-v4.0.1.apk`
 
 arm64-v8a · Android 8.0+ · ~133 MB
 
@@ -28,7 +28,7 @@ arm64-v8a · Android 8.0+ · ~133 MB
 ## What you get
 
 - **The app is the chat.** There is no home panel and no wizard. Open the app, the server starts by itself, and the chat appears as soon as it is healthy.
-- **Native ARM64 runtime.** opencode 1.19.3 is embedded in the APK and runs as a native process. No Termux, no root, no PC.
+- **Native ARM64 runtime.** opencode 1.19.4 is embedded in the APK and runs as a native process. No Termux, no root, no PC.
 - **A full toolchain, already installed.** `git`, `python3` + `pip3`, `node`, `ssh`, `make`, `curl`, `wget`, `bash`, `coreutils`, and the real `apt`/`dpkg`/`pkg`.
 - **Extensible.** `pkg install clang`, `rust`, `go`, `ffmpeg`, `cmake`… straight from the chat.
 - **Phone access.** Battery, clipboard, sensors, Wi-Fi, brightness, volume, toasts, and vibration through `termux-*` commands.
@@ -46,7 +46,7 @@ arm64-v8a · Android 8.0+ · ~133 MB
 
 ## Installation
 
-1. Download `OpenCodeAndroid-v4.0.0.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/latest).
+1. Download `OpenCodeAndroid-v4.0.1.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/latest).
 2. Open the file. If Android blocks it, allow **Install unknown apps** for your browser or file manager.
 3. Install and open **OpenCode Android**.
 4. Grant **All files access** when asked (Android 11+), or storage access on Android 8-10. This lets the agent read `/sdcard` and receive shared files.
@@ -61,7 +61,7 @@ sha256sum -c SHA256SUMS.txt
 On Windows PowerShell:
 
 ```powershell
-Get-FileHash .\OpenCodeAndroid-v4.0.0.apk -Algorithm SHA256
+Get-FileHash .\OpenCodeAndroid-v4.0.1.apk -Algorithm SHA256
 ```
 
 The package id is `com.opencode.launcher.next`; the `.next` suffix is historical. The app is standalone.
@@ -130,7 +130,7 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 - **Install unknown apps**: installs APKs downloaded from Releases.
 - **Notifications**: update and watchdog notices.
 - **Network**: the app contacts `api.github.com` (versions and the official opencode installer) and the package/npm mirrors used to build the toolbox on first run. Prompts and code go to the model provider you configure. There is no analytics or telemetry. Diagnostics mask tokens (`sk-***`, `ghp_***`, `Bearer ***`).
-- **Root is not required.** Nothing in 4.0.0 uses it. `dumpsys wifi`, `settings get/put`, and `ip`/`ifconfig`/`netstat` still need root in a normal app sandbox; the app exposes Android APIs instead.
+- **Root is not required.** Nothing in 4.0.1 uses it. `dumpsys wifi`, `settings get/put`, and `ip`/`ifconfig`/`netstat` still need root in a normal app sandbox; the app exposes Android APIs instead.
 
 ## Known limitations
 
@@ -160,7 +160,7 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 - Create `local.properties` with `sdk.dir=/path/to/your/sdk` (never committed).
 - Debug: `./gradlew :app:assembleDebug` (the first run downloads dependencies).
 - Signed release: `./gradlew :app:assembleRelease` (needs `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`; never commit it — keep the `.jks` and passwords outside the repo).
-- Standalone 4.0.0 APK: `./gradlew :app:assembleBeta` — the Gradle flavor is still named `beta` for history; the APK is version 4.0.0, package `com.opencode.launcher.next`, port 4098, signed with the release key.
+- Standalone 4.0.1 APK: `./gradlew :app:assembleBeta` — the Gradle flavor is still named `beta` for history; the APK is version 4.0.1, package `com.opencode.launcher.next`, port 4098, signed with the release key.
 - The embedded opencode runtime (`app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so`, ~186 MB) is **not in the repository**: it exceeds git's 100 MB per-file limit. It ships inside the published APK. To build, put the binary there first (take it from a published APK).
 - The toolbox packages (`app/src/main/assets/toolbox/`, ~50 MB of `.deb`) are not in the repository either. They come from the official package mirror (`packages.termux.dev`, `binary-aarch64`): download the closure of `git python python-pip python-ensurepip-wheels nodejs openssh make curl wget bash coreutils` and save each as `<package name>.deb`, plus `packages.txt` with `name<TAB>version` lines.
 

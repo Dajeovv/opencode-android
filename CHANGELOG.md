@@ -14,8 +14,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- README and project docs now cover only the standalone 4.0.0 app; the old
+- README and project docs now cover only the standalone 4.0.x app; the old
   setup guides were removed and the changelog starts at 4.0.0.
+
+## [4.0.1] - 2026-10-26
+
+Maintenance release for the standalone app (versionCode 172).
+
+### Changed
+
+- Bundled **opencode 1.19.4** (was 1.19.3). The app no longer offers an update
+  to 1.19.4 on every open because the bundled runtime is already current.
+- Removed the duplicate **OpenCode AISDK** provider and the injected default
+  model. The official `opencode` provider now supplies the free models and
+  rotates them over time; the user's model choice is respected.
 
 ## [4.0.0] - 2026-10-25
 
