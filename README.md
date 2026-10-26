@@ -19,8 +19,6 @@ Not affiliated with, endorsed by, or sponsored by the upstream project.
 
 arm64-v8a · Android 8.0+ · ~133 MB
 
-SHA-256: `00be5e30da650d71f6f630fd4974e93788ac0ef640f0acbeba1d2df18bbd8a19` (also in `SHA256SUMS.txt`).
-
 ## Screenshots
 
 | Chat | Sessions | Launch |
