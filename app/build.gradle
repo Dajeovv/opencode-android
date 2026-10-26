@@ -10,7 +10,7 @@ android {
         applicationId "com.opencode.launcher"
         minSdk 26
         targetSdk 34
-        versionCode 170
+        versionCode 171
         versionName "4.0.0"
         buildConfigField "int", "SERVER_PORT", "4096"
         // Version del binario empaquetado en jniLibs. Actualizarla al cambiarlo.
@@ -46,13 +46,12 @@ android {
             minifyEnabled false
             signingConfig signingConfigs.release
         }
-        // Beta publica (Next): runtime embebido, sin Termux, con paquete aparte
-        // para convivir con la release. Se firma con la clave de release.
+        // App 4.0.0 (Next): runtime embebido, sin Termux, con paquete aparte
+        // para convivir con la release 3.x. Se firma con la clave de release.
         beta {
             initWith release
             matchingFallbacks = ['release']
             applicationIdSuffix ".next"
-            versionNameSuffix "-beta.11"
             buildConfigField "int", "SERVER_PORT", "4098"
             signingConfig signingConfigs.release
         }

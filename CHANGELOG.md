@@ -12,11 +12,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Community health files: CONTRIBUTING, CODE_OF_CONDUCT, SECURITY and AUTHORSHIP.
 - GitHub templates (issue forms, PR template, Dependabot) and a CI workflow that builds the debug APK.
 
-## [4.0.0-beta.11] - 2026-10-25
+## [4.0.0] - 2026-10-25
+
+First 4.0 release. Standalone package `com.opencode.launcher.next` (versionCode
+171); it installs next to the 3.x app and does not replace it.
 
 ### Added
 
-- Bundled **native runtime** for the Next beta: opencode 1.19.3 runs inside the app without Termux or root. `git`, `python3`, `grep`, `find` and the rest of the core Termux tools are launched through `/system/bin/linker64`; proot is only used for `pkg`/`apt`/`dpkg` and prefix scripts.
+- Bundled **native runtime** for the standalone 4.0.0 app: opencode 1.19.3 runs inside the app without Termux or root. `git`, `python3`, `grep`, `find` and the rest of the core Termux tools are launched through `/system/bin/linker64`; proot is only used for `pkg`/`apt`/`dpkg` and prefix scripts.
 - Expanded `termux-wifi-connectioninfo`: transport, IPv4/IPv6, DNS, routes, gateway, Wi-Fi RSSI/signal/frequency/standard, link speeds, DHCP and all visible networks via Android APIs. New `ACCESS_WIFI_STATE` permission.
 - Android 8-10 storage support: legacy `READ/WRITE_EXTERNAL_STORAGE`, `requestLegacyExternalStorage`, a private external folder fallback for Android 10, and automatic retry of a pending share after the permission prompt.
 - Share sheet footnote now shows the real destination (public Downloads or the app's private folder).

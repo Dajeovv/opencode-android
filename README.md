@@ -1,13 +1,16 @@
 # OpenCode Android
 
+**Unofficial Android client for [opencode](https://github.com/anomalyco/opencode).**
+Not affiliated with, endorsed by, or sponsored by the upstream project.
+
 > [!IMPORTANT]
-> ## Next beta — opencode now runs inside the app
+> ## OpenCode Android 4.0.0 — opencode now runs inside the app
 >
-> The stable release still installs opencode inside **Termux**. The **Next** beta
-> changes that: the app ships the opencode binary and the Termux toolchain, and
-> runs the agent on its own — **no Termux, no root, no setup**.
+> The 3.x release still installs opencode inside **Termux**. OpenCode Android
+> 4.0.0 changes that: the app ships the opencode binary and the Termux toolchain,
+> and runs the agent on its own — **no Termux, no root, no setup**.
 >
-> - **Beta.11** uses the bundled **native runtime**: `git`, `python3`, `grep`,
+> - **4.0.0** uses the bundled **native runtime**: `git`, `python3`, `grep`,
 >   `find` and the rest of the core tools run directly. proot is only used for
 >   `pkg`/`apt` and scripts that need the Termux prefix.
 > - The app **is** the chat: open it and the server starts by itself, with the
@@ -16,13 +19,14 @@
 > - The agent can also read the phone: battery, clipboard, sensors, wifi, brightness, volume, toasts and vibration.
 > - Tapping the opencode update notification installs the official binary in place, with checksum verification and automatic rollback.
 >
-> **[Download the beta](https://github.com/Dajeovv/opencode-android/releases)** ·
-> arm64 only, Android 8+ · installs as a separate app, next to this one.
+> **[Download OpenCode Android 4.0.0](https://github.com/Dajeovv/opencode-android/releases)** ·
+> arm64 only, Android 8+ · installs as a separate app (`com.opencode.launcher.next`)
+> next to the 3.x app.
 >
 > Verified on Android 15 arm64. Android 8-10 storage (legacy permission or the
 > app's private folder) is implemented but has not been tested on real hardware.
 >
-> The stable 4.0 release will follow. Nothing changes for current users until then.
+> The 3.x app is unchanged; 4.0.0 is a separate install and does not replace it.
 
 Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real coding agent running on your Android phone. It can inspect and edit files, run commands, and — with wireless ADB — control apps and the UI, all without a PC.
 
@@ -42,9 +46,9 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 
 ## Features
 
-- **One-tap chat**: starts `opencode serve` inside the app (Next beta) or in Termux (stable) and opens the local UI.
+- **One-tap chat**: starts `opencode serve` inside the app (4.0.0) or in Termux (3.x) and opens the local UI.
 - **Device control over wireless ADB (optional)**: with Android 11+ wireless debugging paired inside Termux and `android-tools` installed, opencode can launch apps, tap, type, read the UI and take screenshots — no PC (OEM support varies).
-- **First-run wizard**: the stable app guides you with or without root (installs Termux, configures permissions, installs opencode). The Next beta needs no wizard: it unpacks its toolbox and starts.
+- **First-run wizard**: the 3.x app guides you with or without root (installs Termux, configures permissions, installs opencode). The 4.0.0 app needs no wizard: it unpacks its toolbox and starts.
 - **Share to opencode**: send text or files from any app; check the preview, choose a new or existing conversation, add an optional instruction, and it opens that chat with the content.
 - **Background opencode updates**: downloads with real MB progress, no frozen screen; auto-restarts when done.
 - **Self-updating bundled runtime**: tap the opencode update notification to download and install the official arm64 release in place, with checksum verification and automatic rollback.
@@ -55,12 +59,12 @@ Not just a chatbot: [opencode](https://github.com/anomalyco/opencode) is a real 
 ## Requirements
 
 - Android 8.0+ (API 26), arm64. Tested on Android 15.
-- **Stable app**: [Termux](https://github.com/termux/termux-app) (the app downloads it if missing).
-- **Next beta**: no Termux. The app ships its own runtime and toolbox.
+- **3.x app**: [Termux](https://github.com/termux/termux-app) (the app downloads it if missing).
+- **4.0.0 app**: no Termux. The app ships its own runtime and toolbox.
 - Internet connection for the first run (npm dependencies and the apt index) and for updates.
 
-> Trying the [Next beta](#opencode-android)? Termux is **not** needed there: the
-> agent and its toolbox run inside the app.
+> Trying [OpenCode Android 4.0.0](#opencode-android)? Termux is **not** needed
+> there: the agent and its toolbox run inside the app.
 
 ## Installation
 
@@ -113,9 +117,9 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 2. Open the app and follow the wizard (it will ask for 2–3 permissions).
 3. Tap **Start and open**.
 
-> **Next beta:** there is no wizard. Install the APK, open it, grant "All files
-> access" when asked, and the app unpacks its toolbox and opens the chat by
-> itself.
+> **OpenCode Android 4.0.0:** there is no wizard. Install the APK, open it,
+> grant "All files access" when asked, and the app unpacks its toolbox and opens
+> the chat by itself.
 
 > On some phones you must enable "Install unknown apps" and "All files access" in Settings; the app takes you there.
 
@@ -135,7 +139,7 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 - **Install unknown apps**: installs the APK downloaded from a Release.
 - **Notifications**: update and watchdog notices.
 - **Network**: the app itself only contacts `api.github.com` (versions and the official opencode installer) and the Termux/npm mirrors used to build the toolbox on first run. Prompts and code you send go to the model provider you configure (the default is the free `opencode.ai` model). There is no analytics or telemetry. Diagnostics mask tokens (`sk-***`, `ghp_***`, `Bearer ***`) before display.
-- **Root is optional and diagnostic**: nothing in the beta requires it. `dumpsys wifi`, `settings` and `ip`/`ifconfig`/`netstat` still need root on a normal app sandbox; the app uses Android APIs instead.
+- **Root is optional and diagnostic**: nothing in 4.0.0 requires it. `dumpsys wifi`, `settings` and `ip`/`ifconfig`/`netstat` still need root on a normal app sandbox; the app uses Android APIs instead.
 
 ## Build from source
 
@@ -143,30 +147,30 @@ Full quality: [install-en.mp4](https://github.com/Dajeovv/opencode-android/relea
 - Create `local.properties` with `sdk.dir=/path/to/your/sdk` (never committed).
 - Debug: `./gradlew :app:assembleDebug` (the first run downloads dependencies).
 - Signed release: `./gradlew :app:assembleRelease` (needs a `keystore.properties` next to this README with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; that file is never committed — keep a copy of the `.jks` and its passwords outside the repo).
-- Beta (Next): `./gradlew :app:assembleBeta` — same as the release but with the `.next` package id, its own port and the beta version suffix, signed with the release key.
+- Standalone 4.0.0 app: `./gradlew :app:assembleBeta` — same as the release but with the `.next` package id and its own port (`4098`), signed with the release key. The Gradle flavor is still called `beta`; the APK is version `4.0.0`.
 - The embedded opencode runtime (`app/src/main/jniLibs/arm64-v8a/libopencode2_bin.so`, ~186 MB) is **not in the repository**: it is above git's 100 MB per-file limit. It ships inside the published APK. To build the runtime-enabled variants, put the binary in that path first (take it from a published release APK).
 - The Termux packages bundled as assets (`app/src/main/assets/toolbox/`, ~50 MB of `.deb`) are not in the repository either. They come from the official Termux mirror (`packages.termux.dev`, `binary-aarch64`): download the closure of `git python python-pip python-ensurepip-wheels nodejs openssh make curl wget bash coreutils` and save each one as `<package name>.deb`, plus a `packages.txt` with `name<TAB>version` lines.
 
-## Beta (Next) — details
+## OpenCode Android 4.0.0 (Next) — details
 
-See the [Next beta notice at the top](#opencode-android) for the short version.
+See the [4.0.0 notice at the top](#opencode-android) for the short version.
 
-`v4.0.0-beta.11` is the current **Next** build: opencode runs inside the app on
-the bundled **native runtime** (no Termux, no root), the app starts the server by
+`v4.0.0` is the standalone **Next** build: opencode runs inside the app on the
+bundled **native runtime** (no Termux, no root), the app starts the server by
 itself and lands straight in the chat, the Termux toolchain is already installed,
 and tapping the opencode update notification downloads, verifies and installs the
 official binary in place. proot remains only for `pkg`/`apt` and scripts that
 need the Termux prefix.
 
-- Package: `com.opencode.launcher.next` (it installs next to the current app).
-- Download: [OpenCode Android releases](https://github.com/Dajeovv/opencode-android/releases) (grab the newest pre-release APK).
+- Package: `com.opencode.launcher.next` (it installs next to the 3.x app; it does not replace it).
+- Download: [OpenCode Android releases](https://github.com/Dajeovv/opencode-android/releases) (grab `OpenCodeAndroid-v4.0.0.apk`).
 - arm64 only, Android 8+, ~133 MB to download and ~200 MB more once the toolbox is unpacked.
 - Bundled opencode: `1.19.3`. Local port: `4098`.
 - The UI is Spanish or English, following the system language; light/dark follows the system theme.
 
 ### Where the controls are
 
-There is no home panel in the Next build: the app opens straight into the chat.
+There is no home panel in the 4.0.0 build: the app opens straight into the chat.
 Everything that used to live in the panel is in the **controls menu** (the
 floating button in the bottom right corner): log, restart server, stop server,
 update opencode, check for a new app version, auto-approve toggle, options,
