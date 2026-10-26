@@ -46,8 +46,8 @@ android {
             minifyEnabled false
             signingConfig signingConfigs.release
         }
-        // App 4.0.0 (Next): runtime embebido, sin Termux, con paquete aparte
-        // para convivir con la release 3.x. Se firma con la clave de release.
+        // App 4.0.x (Next): runtime embebido, sin Termux, con paquete aparte.
+        // Se firma con la clave de release.
         beta {
             initWith release
             matchingFallbacks = ['release']

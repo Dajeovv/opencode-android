@@ -28,7 +28,7 @@ Contact: [@Dajeovv](https://github.com/Dajeovv)
   starts the server and lands directly in the chat.
 - Chose a **bilingual ES/EN UI** following the system light/dark theme.
 
-Evidence: README.md, CHANGELOG.md, release v4.0.0, and the project's
+Evidence: README.md, CHANGELOG.md, release v4.0.1, and the project's
 development records.
 
 ## Exercise of Judgment
@@ -37,7 +37,7 @@ development records.
   kept proot as a fallback for package management and prefix scripts.
 - **Scoped `LD_LIBRARY_PATH`** to `linker64` launches so system binaries such as
   `dumpsys`, `pm`, and `cmd` load their own libraries.
-- **Rejected root-dependent messaging**: nothing in 4.0.0 requires root, so no
+- **Rejected root-dependent messaging**: nothing in 4.0.x requires root, so no
   root warnings are surfaced to users.
 - **Redesigned the opencode update downloader** after it froze the UI; enforced
   real MB-progress feedback, checksum verification, and automatic rollback.

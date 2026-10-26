@@ -19,7 +19,7 @@ labels: bug
 **Environment**
 - Device:
 - Android version:
-- App version (4.0.0):
+- App version (e.g. 4.0.1):
 - opencode version (controls menu → Log):
 - Installation: fresh / updated
 
