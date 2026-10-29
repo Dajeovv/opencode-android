@@ -81,5 +81,5 @@ dependencies {
     implementation 'com.google.android.material:material:1.12.0'
     // Descompresion xz en Java: Android no trae el binario xz y el tar de
     // Toybox lo necesita para los .deb de Termux.
-    implementation 'org.tukaani:xz:1.10'
+    implementation 'org.tukaani:xz:1.12'
 }
