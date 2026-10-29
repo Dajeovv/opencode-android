@@ -2,6 +2,7 @@ package com.opencode.launcher;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.system.Os;
 import android.util.Log;
 
 import java.io.BufferedReader;
@@ -18,12 +19,15 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 public final class LocalRuntime {
@@ -31,12 +35,31 @@ public final class LocalRuntime {
     private static final Object LOCK = new Object();
     private static final String PREF = "app";
     private static final String PREF_NATIVE = "native_runtime_enabled";
+    private static final String PREF_PROJECTS = "projects";
+    private static final String PREF_PROJECT_DIRS = "dirs";
+    private static final int MAX_REMEMBERED_PROJECTS = 8;
     private static final long NATIVE_HEALTH_TIMEOUT_MS = 45_000;
+    private static final Object GIT_LOCK = new Object();
 
     private static Process process;
     private static String activeBinPath;
 
     private LocalRuntime() {
+    }
+
+    /**
+     * Directorio HOME del runtime. Se resuelve a su forma canonica
+     * (/data/data/...) para que coincida con las rutas que devuelve el
+     * servidor; /data/user/0 y /data/data son el mismo sitio, pero la UI
+     * compara cadenas y descartaria las sesiones si no coinciden.
+     */
+    public static File homeDir(Context ctx) {
+        File home = new File(ctx.getFilesDir(), "home");
+        try {
+            return home.getCanonicalFile();
+        } catch (IOException e) {
+            return home;
+        }
     }
 
     public static String activeVersion(Context ctx) {
@@ -174,19 +197,20 @@ public final class LocalRuntime {
             bin.setExecutable(true, true);
         }
 
-        File home = new File(app.getFilesDir(), "home");
+        File home = homeDir(app);
         File config = new File(home, ".config/opencode");
         File tmp = new File(app.getCacheDir(), "tmp");
         File lib = new File(home, "lib");
-        File etc = new File(home, "etc");
+        File etc = new File(home, ".oc-etc");
         mkdirs(home);
         mkdirs(config);
         mkdirs(tmp);
         mkdirs(lib);
         mkdirs(etc);
         writeConfig(config);
+        writeGitConfig(home);
         installTools(app, config);
-        writeNetworkOverrides(etc);
+        prepareNetworkOverrides(home, etc);
         copyIfNeeded(new File(nd, "libstdcxx.so"), new File(lib, "libstdc++.so.6"));
         copyIfNeeded(new File(nd, "libgcc_s.so"), new File(lib, "libgcc_s.so.1"));
 
@@ -221,6 +245,11 @@ public final class LocalRuntime {
         env.put("OPENCODE_WRAPPER", wrapper.getAbsolutePath());
         env.put("SHELL", agentShell.getAbsolutePath());
 
+        // El repo debe existir antes de "serve": si no, upstream resuelve el
+        // worktree como "/" y el watcher recorre todo el sistema de archivos.
+        ensureNativeGit(home, nd);
+        ensureGitRepo(home, nd, LocalToolbox.prefix(app), env);
+
         List<String> cmd = new ArrayList<>();
         cmd.add(musl.getAbsolutePath());
         cmd.add("--library-path");
@@ -249,17 +278,23 @@ public final class LocalRuntime {
             return false;
         }
         Log.i(TAG, "runtime nativo listo en 127.0.0.1:" + port);
+        ensureProjectWorktree(port);
+        // Precalienta los proyectos ya abiertos sin retrasar el arranque: el
+        // primer request de cada uno tambien los prepara desde oc-early.js.
+        Thread warm = new Thread(() -> ensureRememberedProjects(app), "project-warmup");
+        warm.setDaemon(true);
+        warm.start();
         return true;
     }
 
     private static boolean startProot(Context app, int port) throws IOException {
         File nd = new File(app.getApplicationInfo().nativeLibraryDir);
-        File home = new File(app.getFilesDir(), "home");
+        File home = homeDir(app);
         File config = new File(home, ".config/opencode");
         File tmp = new File(app.getCacheDir(), "tmp");
         File prootTmp = new File(tmp, "proot");
         File lib = new File(home, "lib");
-        File etc = new File(home, "etc");
+        File etc = new File(home, ".oc-etc");
         mkdirs(home);
         mkdirs(config);
         mkdirs(tmp);
@@ -267,8 +302,9 @@ public final class LocalRuntime {
         mkdirs(lib);
         mkdirs(etc);
         writeConfig(config);
+        writeGitConfig(home);
         installTools(app, config);
-        writeNetworkOverrides(etc);
+        prepareNetworkOverrides(home, etc);
 
         File bin = runtimeBinary(app);
         if (bin == null) bin = new File(nd, "libopencode2_bin.so");
@@ -306,17 +342,17 @@ public final class LocalRuntime {
             Context app = ctx.getApplicationContext();
             File nd = new File(app.getApplicationInfo().nativeLibraryDir);
             if (!prootAvailable(app)) return "no hay runtime proot";
-            File home = new File(app.getFilesDir(), "home");
+            File home = homeDir(app);
             File tmp = new File(app.getCacheDir(), "tmp");
             File prootTmp = new File(tmp, "proot");
             File lib = new File(home, "lib");
-            File etc = new File(home, "etc");
+            File etc = new File(home, ".oc-etc");
             mkdirs(home);
             mkdirs(tmp);
             mkdirs(prootTmp);
             mkdirs(lib);
             mkdirs(etc);
-            writeNetworkOverrides(etc);
+            prepareNetworkOverrides(home, etc);
             File musl = new File(nd, "libld_musl.so");
             File proot = new File(nd, "libproot.so");
             File loader = new File(nd, "libproot_loader.so");
@@ -352,6 +388,313 @@ public final class LocalRuntime {
             return out.toString();
         } catch (Exception e) {
             return "error: " + e;
+        }
+    }
+
+    /**
+     * Deja "git" resoluble por el servidor nativo: un enlace en home/.native-bin
+     * apunta al trampolin libgit.so del directorio nativo. Android no permite
+     * execve de nada dentro de files/, pero si del .so empaquetado en el APK.
+     * El enlace se recrea en cada arranque porque nativeLibraryDir cambia con
+     * las actualizaciones.
+     */
+    private static File ensureNativeGit(File home, File nd) {
+        File tramp = new File(nd, "libgit.so");
+        File dir = new File(home, ".native-bin");
+        File link = new File(dir, "git");
+        if (!tramp.isFile()) {
+            Log.w(TAG, "falta libgit.so en nativeLibraryDir");
+            return null;
+        }
+        try {
+            mkdirs(dir);
+            if (Files.isSymbolicLink(link.toPath()) || link.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                link.delete();
+            }
+            Os.symlink(tramp.getAbsolutePath(), link.getAbsolutePath());
+            return link;
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo enlazar git nativo: " + e);
+            return null;
+        }
+    }
+
+    /**
+     * Crea el repositorio git de home antes de arrancar el servidor. Sin repo,
+     * upstream resuelve el worktree como "/" y el watcher recorre todo el
+     * sistema de archivos (el bloqueo de ~5 s al abrir una sesion).
+     */
+    private static void ensureGitRepo(File home, File nd, File prefix,
+            Map<String, String> env) {
+        File gitReal = new File(prefix, "bin/git");
+        File tramp = new File(nd, "libgit.so");
+        File dotGit = new File(home, ".git");
+        if (!gitReal.isFile() || !tramp.isFile()) {
+            Log.w(TAG, "git no disponible; se omite la inicializacion del repo");
+            return;
+        }
+        try {
+            if (!new File(dotGit, "HEAD").isFile()) {
+                ProcessBuilder pb = new ProcessBuilder(tramp.getAbsolutePath(), "init", "-q");
+                pb.directory(home);
+                pb.redirectErrorStream(true);
+                pb.environment().clear();
+                pb.environment().putAll(env);
+                Process p = pb.start();
+                StringBuilder out = new StringBuilder();
+                try (BufferedReader r = new BufferedReader(
+                        new InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = r.readLine()) != null && out.length() < 4000) {
+                        out.append(line).append('\n');
+                    }
+                }
+                if (!p.waitFor(20, TimeUnit.SECONDS)) {
+                    p.destroyForcibly();
+                    Log.w(TAG, "git init sin terminar: " + out);
+                    return;
+                }
+                Log.i(TAG, "git init en home: " + (out.length() == 0 ? "ok" : out));
+            }
+            ensureExclude(dotGit);
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo preparar el repo git: " + e);
+        }
+    }
+
+    /**
+     * Mantiene el exclude de home sin tocar las lineas del usuario. Las
+     * versiones anteriores ignoraban "etc/", que es una carpeta real del
+     * proyecto; ahora las overrides viven en ".oc-etc/".
+     */
+    private static void ensureExclude(File dotGit) throws IOException {
+        File info = new File(dotGit, "info");
+        File exclude = new File(info, "exclude");
+        List<String> lines = new ArrayList<>();
+        if (exclude.isFile()) {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    new FileInputStream(exclude), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) lines.add(line);
+            }
+        }
+        List<String> out = new ArrayList<>();
+        boolean hasOcEtc = false;
+        for (String line : lines) {
+            String t = line.trim();
+            if (t.equals("etc/") || t.equals("etc")) continue;
+            if (t.equals(".oc-etc/")) hasOcEtc = true;
+            out.add(line);
+        }
+        if (!hasOcEtc) out.add(".oc-etc/");
+        if (!exclude.isFile()) {
+            out.clear();
+            out.add(".cache/");
+            out.add(".config/");
+            out.add(".local/");
+            out.add(".npm/");
+            out.add(".run/");
+            out.add(".ssh/");
+            out.add("lib/");
+            out.add(".native-bin/");
+            out.add(".oc-etc/");
+        }
+        mkdirs(info);
+        StringBuilder body = new StringBuilder();
+        for (String line : out) body.append(line).append('\n');
+        try (FileOutputStream fos = new FileOutputStream(exclude)) {
+            fos.write(body.toString().getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static String canonical(File file) {
+        try {
+            return file.getCanonicalPath();
+        } catch (IOException e) {
+            return file.getAbsolutePath();
+        }
+    }
+
+    /** Raiz git de un directorio, o el propio directorio si no hay repo. */
+    public static String projectRoot(Context ctx, String dirPath) {
+        if (dirPath == null || dirPath.isEmpty()) return "";
+        File dir = new File(dirPath);
+        File cur = dir;
+        while (cur != null) {
+            if (new File(cur, ".git").exists()) return canonical(cur);
+            cur = cur.getParentFile();
+        }
+        return canonical(dir);
+    }
+
+    /**
+     * Se llama desde la SPA antes de mandar un "directory" al servidor. Si el
+     * proyecto no tiene repo, lo crea con el git nativo del APK. Devuelve la
+     * raiz para que el cache de /provider use una clave estable.
+     */
+    public static String ensureProjectGit(Context ctx, String dirPath) {
+        Context app = ctx.getApplicationContext();
+        if (dirPath == null || dirPath.isEmpty()) return "";
+        File dir = new File(dirPath);
+        // Si alguien elige la carpeta .git (el selector ya la oculta), se
+        // abre el proyecto que la contiene, nunca la carpeta interna.
+        if (".git".equals(dir.getName())) {
+            File parent = dir.getParentFile();
+            if (parent != null && parent.isDirectory()) {
+                dir = parent;
+                dirPath = parent.getAbsolutePath();
+            }
+        }
+        if (!dir.isDirectory()) return canonical(dir);
+        String root = projectRoot(app, dirPath);
+        if (new File(root, ".git").exists()) {
+            rememberProject(app, root);
+            return root;
+        }
+        String path = canonical(dir);
+        if ("/".equals(path) || "/sdcard".equals(path)
+                || "/storage/emulated/0".equals(path)) {
+            Log.w(TAG, "no se inicializa git en la raiz " + path);
+            return path;
+        }
+        synchronized (GIT_LOCK) {
+            root = projectRoot(app, dirPath);
+            if (new File(root, ".git").exists()) {
+                rememberProject(app, root);
+                return root;
+            }
+            File nd = new File(app.getApplicationInfo().nativeLibraryDir);
+            File tramp = new File(nd, "libgit.so");
+            if (!tramp.isFile()) {
+                Log.w(TAG, "sin libgit.so; no se prepara " + path);
+                return path;
+            }
+            try {
+                File home = homeDir(app);
+                File tmp = new File(app.getCacheDir(), "tmp");
+                Map<String, String> env = buildNativeEnv(app, home, tmp, nd, 0);
+                ProcessBuilder pb = new ProcessBuilder(tramp.getAbsolutePath(), "init", "-q");
+                pb.directory(new File(path));
+                pb.redirectErrorStream(true);
+                pb.environment().clear();
+                pb.environment().putAll(env);
+                Process p = pb.start();
+                StringBuilder out = new StringBuilder();
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                        p.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = r.readLine()) != null && out.length() < 4000) {
+                        out.append(line).append('\n');
+                    }
+                }
+                if (!p.waitFor(20, TimeUnit.SECONDS)) {
+                    p.destroyForcibly();
+                    Log.w(TAG, "git init sin terminar en " + path + ": " + out);
+                    return path;
+                }
+                boolean ok = p.exitValue() == 0 && new File(dir, ".git").exists();
+                Log.i(TAG, "git init " + path + ": " + (ok ? "ok" : out));
+                if (ok) rememberProject(app, path);
+            } catch (Exception e) {
+                Log.w(TAG, "git init fallo en " + path + ": " + e);
+            }
+            return path;
+        }
+    }
+
+    private static void rememberProject(Context app, String dir) {
+        if (dir == null || dir.isEmpty()) return;
+        try {
+            // /data/data y /data/user/0 son el mismo sitio: una sola entrada.
+            String key;
+            try {
+                key = new File(dir).getCanonicalPath();
+            } catch (Exception e) {
+                key = dir;
+            }
+            SharedPreferences sp = app.getSharedPreferences(
+                    PREF_PROJECTS, Context.MODE_PRIVATE);
+            Set<String> old = sp.getStringSet(PREF_PROJECT_DIRS, null);
+            LinkedHashSet<String> set = new LinkedHashSet<>();
+            if (old != null) set.addAll(old);
+            if (set.contains(key)) return;
+            set.add(key);
+            while (set.size() > MAX_REMEMBERED_PROJECTS) {
+                java.util.Iterator<String> it = set.iterator();
+                it.next();
+                it.remove();
+            }
+            sp.edit().putStringSet(PREF_PROJECT_DIRS, set).apply();
+            Log.i(TAG, "proyecto recordado: " + dir);
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo recordar el proyecto: " + e);
+        }
+    }
+
+    private static void ensureRememberedProjects(Context app) {
+        try {
+            SharedPreferences sp = app.getSharedPreferences(
+                    PREF_PROJECTS, Context.MODE_PRIVATE);
+            Set<String> dirs = sp.getStringSet(PREF_PROJECT_DIRS, null);
+            if (dirs == null || dirs.isEmpty()) return;
+            for (String dir : new ArrayList<>(dirs)) {
+                try {
+                    ensureProjectGit(app, dir);
+                } catch (Exception e) {
+                    Log.w(TAG, "proyecto recordado " + dir + ": " + e);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudieron preparar los proyectos recordados: " + e);
+        }
+    }
+
+    /**
+     * Migracion para instalaciones que ya tenian el proyecto "global" con
+     * worktree "/". Solo actua si /project lo confirma; en instalaciones
+     * nuevas el repo ya existe antes del primer arranque.
+     */
+    private static void ensureProjectWorktree(int port) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(
+                    "http://127.0.0.1:" + port + "/project").openConnection();
+            c.setConnectTimeout(1500);
+            c.setReadTimeout(2500);
+            c.setUseCaches(false);
+            String body = readAll(c);
+            if (!body.contains("\"worktree\":\"/\"")
+                    && !body.contains("\"worktree\": \"/\"")) {
+                return;
+            }
+            HttpURLConnection post = (HttpURLConnection) new URL(
+                    "http://127.0.0.1:" + port + "/project/git/init").openConnection();
+            post.setConnectTimeout(2000);
+            post.setReadTimeout(12000);
+            post.setUseCaches(false);
+            post.setRequestMethod("POST");
+            post.setDoOutput(true);
+            post.setFixedLengthStreamingMode(0);
+            int code = post.getResponseCode();
+            Log.i(TAG, "worktree migrado a git: HTTP " + code);
+            post.disconnect();
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo migrar el worktree: " + e);
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private static String readAll(HttpURLConnection c) throws IOException {
+        try (InputStream in = c.getInputStream()) {
+            byte[] buf = new byte[8192];
+            StringBuilder out = new StringBuilder();
+            int n;
+            while ((n = in.read(buf)) > 0 && out.length() < 65536) {
+                out.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+            }
+            return out.toString();
         }
     }
 
@@ -391,7 +734,11 @@ public final class LocalRuntime {
         // fuera de proot (Android bloquea execve en el directorio de datos).
         // Los que solo existen en el prefijo los detecta CommandResolver y
         // los manda a proot.
-        String path = "/system/bin:/system/xbin:/vendor/bin"
+        // .native-bin va primero: el servidor resuelve "git" por PATH y solo
+        // puede ejecutar el trampolin del directorio nativo (SELinux bloquea
+        // execve en files/). El git real del prefijo sigue intacto para proot.
+        String path = new File(home, ".native-bin").getAbsolutePath()
+                + ":/system/bin:/system/xbin:/vendor/bin"
                 + (hasToolbox ? ":" + prefix.getAbsolutePath() + "/bin" : "")
                 + ":" + nd;
         env.put("PATH", path);
@@ -662,6 +1009,74 @@ public final class LocalRuntime {
         }
     }
 
+    private static void prepareNetworkOverrides(File home, File etc) throws IOException {
+        migrateNetworkOverrides(home);
+        writeNetworkOverrides(etc);
+    }
+
+    /**
+     * Instalaciones anteriores guardaban hosts/resolv.conf dentro de home/etc,
+     * que es una carpeta del proyecto del usuario. Solo se borran si el
+     * contenido es exactamente el que generaba el launcher; cualquier edicion
+     * del usuario se conserva.
+     */
+    private static void migrateNetworkOverrides(File home) {
+        File old = new File(home, "etc");
+        File hosts = new File(old, "hosts");
+        if (hosts.isFile() && isOurHosts(hosts)) {
+            if (hosts.delete()) Log.i(TAG, "hosts antiguo retirado de etc");
+        }
+        File resolv = new File(old, "resolv.conf");
+        if (resolv.isFile() && isOurResolv(resolv)) {
+            if (resolv.delete()) Log.i(TAG, "resolv.conf antiguo retirado de etc");
+        }
+    }
+
+    private static boolean isOurHosts(File file) {
+        try {
+            List<String> lines = new ArrayList<>();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    new FileInputStream(file), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (!line.trim().isEmpty()) lines.add(line.trim());
+                }
+            }
+            if (lines.size() != 3) return false;
+            if (!lines.get(0).equals("127.0.0.1 localhost")) return false;
+            boolean opencode = false;
+            boolean models = false;
+            for (int i = 1; i < lines.size(); i++) {
+                String[] parts = lines.get(i).split("\\s+");
+                if (parts.length != 2) return false;
+                if (parts[1].equals("opencode.ai")) opencode = true;
+                else if (parts[1].equals("models.opencode.ai")) models = true;
+                else return false;
+            }
+            return opencode && models;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isOurResolv(File file) {
+        try {
+            List<String> lines = new ArrayList<>();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                    new FileInputStream(file), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (!line.trim().isEmpty()) lines.add(line.trim());
+                }
+            }
+            return lines.size() == 2
+                    && lines.get(0).equals("nameserver 1.1.1.1")
+                    && lines.get(1).equals("nameserver 8.8.8.8");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static void writeNetworkOverrides(File etc) throws IOException {
         String[][] hosts = {
                 {"opencode.ai", "172.65.90.20"},
@@ -756,6 +1171,31 @@ public final class LocalRuntime {
         try (FileWriter w = new FileWriter(f, false)) {
             w.write("{\n  \"$schema\": \"https://opencode.ai/config.json\",\n");
             w.write("  \"autoupdate\": false\n}\n");
+        }
+    }
+
+    /**
+     * El FUSE de /sdcard presenta los archivos como de media_rw, no del uid
+     * de la app. Git lo interpreta como "dubious ownership" y se niega a
+     * trabajar, con lo que un proyecto externo acababa con worktree "/".
+     * Se marca safe.directory para todos los repos: el sandbox de la app ya
+     * esta aislado y el usuario elige que proyectos abre.
+     */
+    private static void writeGitConfig(File home) {
+        File f = new File(home, ".gitconfig");
+        try {
+            String body = f.isFile()
+                    ? new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8)
+                    : "";
+            if (body.contains("[safe]")) return;
+            StringBuilder sb = new StringBuilder(body);
+            if (sb.length() > 0 && sb.charAt(sb.length() - 1) != '\n') sb.append('\n');
+            sb.append("[safe]\n\tdirectory = *\n");
+            try (FileOutputStream fos = new FileOutputStream(f, false)) {
+                fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo escribir .gitconfig: " + e.getMessage());
         }
     }
 

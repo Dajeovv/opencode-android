@@ -3,3 +3,5 @@
 *.apk binary
 *.png binary
 *.jks binary
+app/src/main/jniLibs/**/libocshell.so -text
+app/src/main/jniLibs/**/libgit.so -text

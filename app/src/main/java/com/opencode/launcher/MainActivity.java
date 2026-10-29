@@ -33,6 +33,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -66,6 +67,7 @@ import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URL;
+import java.io.ByteArrayInputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -130,6 +132,8 @@ public class MainActivity extends AppCompatActivity {
             + " command -v opencode; opencode --version 2>&1 | head -1; echo setup-noroot-ok\n";
 
     private WebView web;
+    /** JS que se inyecta antes del bundle (cache de /provider y git de proyectos). */
+    private String earlyScriptCache;
     private View boxContent;
     private MaterialCardView cardWeb;
     private TextView txtStatus;
@@ -408,14 +412,59 @@ public class MainActivity extends AppCompatActivity {
             WebView.setWebContentsDebuggingEnabled(true);
         }
         web.setWebViewClient(new WebViewClient() {
+            /**
+             * La SPA carga su bundle al final del body. Para que el cache de
+             * /provider y el arreglo de git existan antes, se sirve el HTML
+             * con un <script src="/oc-early.js"> extra. La CSP permite
+             * scripts same-origin, asi que no hace falta 'unsafe-inline'.
+             */
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view,
+                    WebResourceRequest request) {
+                try {
+                    Uri u = request.getUrl();
+                    String path = u.getPath();
+                    if (path == null) return null;
+                    if ("/oc-early.js".equals(path)) {
+                        byte[] js = earlyScript().getBytes(StandardCharsets.UTF_8);
+                        Map<String, String> h = new HashMap<>();
+                        h.put("Cache-Control", "no-store");
+                        return new WebResourceResponse("application/javascript", "utf-8",
+                                200, "OK", h, new ByteArrayInputStream(js));
+                    }
+                    if (!request.isForMainFrame()) return null;
+                    if (!"GET".equalsIgnoreCase(request.getMethod())) return null;
+                    String host = u.getHost();
+                    if (!(HOST.equals(host) || "localhost".equalsIgnoreCase(host))) return null;
+                    // Solo documentos HTML: "/" y rutas SPA sin extension.
+                    String last = path.substring(path.lastIndexOf('/') + 1);
+                    if (last.contains(".")) return null;
+                    String q = u.getEncodedQuery();
+                    IndexDoc doc = fetchIndexDoc(path + (q == null ? "" : "?" + q));
+                    if (doc == null) return null;
+                    String html = injectEarlyScript(doc.html);
+                    Map<String, String> h = new HashMap<>();
+                    h.put("Cache-Control", "no-store");
+                    if (doc.csp != null && !doc.csp.isEmpty()) {
+                        h.put("Content-Security-Policy", doc.csp);
+                    }
+                    return new WebResourceResponse("text/html", "utf-8",
+                            200, "OK", h,
+                            new ByteArrayInputStream(html.getBytes(StandardCharsets.UTF_8)));
+                } catch (Exception e) {
+                    log("early intercept: " + e);
+                    return null;
+                }
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 urlLoading = false;
-                hideSplash();
+                watchUiReady();
                 injectEdgeCss();
                 flattenViewportFrame();
-                boostSidebarFooter();
+                scheduleFootbar();
                 bridgeNotifications();
                 redirectHelpToIssues();
                 rebrandDesktopToMobile();
@@ -428,15 +477,10 @@ public class MainActivity extends AppCompatActivity {
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 super.doUpdateVisitedHistory(view, url, isReload);
                 // La web es SPA: al navegar (lista -> chat) no hay recarga.
+                // Los demas shims viven en observadores; aqui solo hay que
+                // reponer la barra del sidebar y el CSS (idempotente).
                 injectEdgeCss();
-                flattenViewportFrame();
-                boostSidebarFooter();
-                bridgeNotifications();
-                redirectHelpToIssues();
-                rebrandDesktopToMobile();
-                shimAutoAccept();
-                hideShortcutsSettings();
-            shimUsageTap();
+                scheduleFootbar();
             }
 
             @Override
@@ -1744,7 +1788,73 @@ public class MainActivity extends AppCompatActivity {
         public void debug(String msg) {
             Log.d("OpenCode", "auto-shim-js: " + msg);
         }
+
+        /** Ruta canonica de HOME, para migrar rutas antiguas de la UI. */
+        @JavascriptInterface
+        public String homeDir() {
+            return LocalRuntime.homeDir(MainActivity.this).getAbsolutePath();
+        }
+
+        /**
+         * Prepara el repo git de un proyecto antes de que el servidor lo vea.
+         * Devuelve la raiz del repo (o el propio directorio si no se pudo).
+         */
+        @JavascriptInterface
+        public String ensureProjectGit(String dir) {
+            try {
+                return LocalRuntime.ensureProjectGit(MainActivity.this, dir);
+            } catch (Exception e) {
+                Log.w("OpenCode", "ensureProjectGit: " + e);
+                return dir == null ? "" : dir;
+            }
+        }
+
+        /** La SPA ya pinto contenido real: se puede retirar el splash. */
+        @JavascriptInterface
+        public void uiReady() {
+            runOnUiThread(MainActivity.this::hideSplash);
+        }
     }
+
+    /**
+     * onPageFinished llega con el HTML vacio: la SPA tarda varios segundos en
+     * hidratar la instancia. Si se retira el splash ahi se ve un negro largo
+     * (el "congelado" al abrir sesion). Se espera a que #root tenga contenido.
+     */
+    private void watchUiReady() {
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__ocReadyObs)return 'ya';"
+                    + "var root=document.getElementById('root');"
+                    + "if(!root)return 'no-root';"
+                    + "var done=false;"
+                    + "function check(){if(done)return;"
+                    + "var n=root.querySelectorAll('*').length;"
+                    + "if(n<40)return;"
+                    + "var sig=root.querySelector('textarea,[contenteditable=\"true\"],nav,[data-slot]');"
+                    + "if(!sig&&n<120)return;"
+                    + "done=true;"
+                    + "if(window.__ocReadyObs)window.__ocReadyObs.disconnect();"
+                    + "try{ocConfig.uiReady();}catch(e){}}"
+                    + "window.__ocReadyObs=new MutationObserver(function(){"
+                    + "if(window.__ocReadyT)return;"
+                    + "window.__ocReadyT=setTimeout(function(){"
+                    + "window.__ocReadyT=null;check();},120);});"
+                    + "window.__ocReadyObs.observe(root,{childList:true,subtree:true});"
+                    + "setTimeout(check,700);"
+                    + "return 'ready-watch';}catch(e){return 'ERR:'+e;}})()",
+                    v -> Log.d("OpenCode", "ui-ready: " + v));
+        } catch (Exception e) {
+            Log.d("OpenCode", "ui-ready fallo: " + e.getMessage());
+            hideSplash();
+        }
+        // Red de seguridad: nunca dejar el splash eterno si la SPA no arranca.
+        progressHandler.removeCallbacks(splashFallback);
+        progressHandler.postDelayed(splashFallback, 15000);
+    }
+
+    private final Runnable splashFallback = this::hideSplash;
 
     /** Instala el puente en la pagina (la SPA lo conserva; se repone en cada carga). */
     private void bridgeNotifications() {
@@ -1816,58 +1926,77 @@ public class MainActivity extends AppCompatActivity {
                     "(function(){try{"
                     + "var old=document.getElementById('oc-footbar');"
                     + "var labels=['Ajustes','Settings','Ayuda','Help'];"
-                    + "function isLabel(e){if(!e)return false;"
-                    + "var t=(e.textContent||'').trim();return labels.indexOf(t)>=0;}"
-                    + "var holders=[];"
-                    + "Array.prototype.forEach.call(document.querySelectorAll('*'),function(e){"
-                    + "if(holders.length<4&&isLabel(e))holders.push(e);});"
-                    + "if(!holders.length){if(old)old.remove();return 'none';}"
-                    + "function hideDupes(){"
-                    + "Array.prototype.forEach.call(document.querySelectorAll('*'),function(e){"
-                    + "if(e.closest&&e.closest('#oc-footbar'))return;"
-                    + "var t=(e.textContent||'').trim();"
-                    + "if(labels.indexOf(t)>=0){"
-                    + "var r=e.closest?(e.closest('button')||e.closest('a')||e.closest('[role=\"button\"]')):null;"
-                    + "(r||e).style.setProperty('display','none','important');}});}"
-                    + "if(old){hideDupes();return 'done';}"
-                    + "var rows=[];"
-                    + "holders.forEach(function(h){"
-                    + "var r=h.closest? (h.closest('button')||h.closest('a')||h.closest('[role=\"button\"]')):null;"
-                    + "if(!r)r=h;"
-                    + "if(rows.indexOf(r)<0)rows.push(r);});"
-                    + "if(rows.length<1)return 'none';"
-                    + "var sc=rows[0];while(sc&&sc!==document.body){"
+                    // Recorrer nodos de texto evita el textContent de cada
+                    // elemento (coste O(n^2) en paginas con muchos mensajes).
+                    + "function scan(){var out=[],w=document.createTreeWalker("
+                    + "document.body,NodeFilter.SHOW_TEXT,null),n;"
+                    + "while((n=w.nextNode())&&out.length<12){"
+                    + "var t=(n.nodeValue||'').trim();"
+                    + "if(labels.indexOf(t)<0)continue;"
+                    + "var e=n.parentElement;if(!e)continue;"
+                    + "if(e.closest&&e.closest('#oc-footbar'))continue;"
+                    + "var r=(e.closest('button')||e.closest('a')||e.closest('[role=\"button\"]')||e);"
+                    + "var seen=false;"
+                    + "for(var q=0;q<out.length;q++)if(out[q][1]===r){seen=true;break;}"
+                    + "if(!seen)out.push([t,r]);}"
+                    + "return out;}"
+                    + "function hide(list){for(var i=0;i<list.length;i++)"
+                    + "list[i][1].style.setProperty('display','none','important');}"
+                    + "if(old){hide(scan());return 'done';}"
+                    + "var all=scan();"
+                    + "if(!all.length)return 'none';"
+                    // La SPA pinta dos copias de Settings/Help: a la barra va
+                    // solo la primera de cada etiqueta y el resto se oculta.
+                    + "var list=[],dups=[];"
+                    + "for(var i=0;i<all.length;i++){var lab=all[i][0],seen=false;"
+                    + "for(var j=0;j<list.length;j++)if(list[j][0]===lab){seen=true;break;}"
+                    + "if(seen)dups.push(all[i]);else list.push(all[i]);}"
+                    + "var sc=list[0][1];while(sc&&sc!==document.body){"
                     + "if(sc.scrollHeight>sc.clientHeight+50)break;sc=sc.parentElement;}"
                     + "if(!sc||sc===document.body)return 'noscroll';"
-                    + "var bg=getComputedStyle(sc).backgroundColor;"
+                    // El viewport del scroll es transparente; el color real
+                    // esta en un ancestro. Sin fondo la barra se solapa con
+                    // las ultimas sesiones y se leen las dos capas.
+                    + "function solid(c){if(!c||c==='transparent')return false;"
+                    + "var m=/^rgba?\\(([^)]+)\\)$/.exec(c);if(!m)return false;"
+                    + "var p=m[1].split(',');"
+                    + "return p.length<4||parseFloat(p[3])>=0.95;}"
+                    + "var bg='rgb(22,22,22)',bx=sc,panel=sc.parentElement||sc;"
+                    + "while(bx&&bx!==document.body){var b=getComputedStyle(bx).backgroundColor;"
+                    + "if(solid(b)){bg=b;panel=bx;break;}"
+                    + "bx=bx.parentElement;}"
+                    // La lista de sesiones es virtualizada y monta despues: si
+                    // la barra va dentro del scroll acaba entre las filas. Se
+                    // ancla al panel del sidebar, fuera del area que scrollea.
                     + "var bar=document.createElement('div');bar.id='oc-footbar';"
-                    + "bar.style.cssText='position:sticky;bottom:0;z-index:5;display:flex;gap:8px;"
-                    + "padding:10px 12px;background:'+bg+';';"
-                    + "rows.forEach(function(r){"
+                    + "bar.style.cssText='position:absolute;left:0;right:0;bottom:0;z-index:5;"
+                    + "display:flex;gap:8px;padding:10px 12px;background:'+bg+';';"
+                    + "for(var i=0;i<list.length;i++){var r=list[i][1];"
                     + "r.style.removeProperty('display');"
                     + "r.style.setProperty('flex','1','important');"
                     + "r.style.setProperty('justify-content','center','important');"
                     + "r.style.setProperty('color','#ffffff','important');"
-                    + "var all=r.querySelectorAll('*');"
-                    + "Array.prototype.forEach.call(all,function(x){var t=(x.textContent||'').trim();"
-                    + "if(labels.indexOf(t)>=0){x.style.setProperty('font-size','17px','important');"
-                    + "x.style.setProperty('font-weight','600','important');"
-                    + "x.style.setProperty('color','#ffffff','important');}});"
-                    + "bar.appendChild(r);});"
-                    + "sc.appendChild(bar);"
+                    + "var xs=r.querySelectorAll('*');"
+                    + "for(var j=0;j<xs.length;j++){var t=(xs[j].textContent||'').trim();"
+                    + "if(labels.indexOf(t)>=0){xs[j].style.setProperty('font-size','17px','important');"
+                    + "xs[j].style.setProperty('font-weight','600','important');"
+                    + "xs[j].style.setProperty('color','#ffffff','important');}}"
+                    + "bar.appendChild(r);}"
+                    + "if(getComputedStyle(panel).position==='static')"
+                    + "panel.style.setProperty('position','relative','important');"
+                    + "panel.appendChild(bar);"
                     + "try{var bh=bar.offsetHeight||64;"
                     + "sc.style.setProperty('padding-bottom',(bh+8)+'px','important');}"
                     + "catch(e2){}"
-                    + "hideDupes();"
-                    + "return rows.length+'barok';"
+                    + "hide(dups);"
+                    + "return list.length+'barok';"
                     + "}catch(err){return 'FERR';}})()",
                     v -> {
                         Log.d("OpenCode", "foot-fix: " + v);
                         // La lista hidrata tarde: reintentar acotado si aun no existe.
-                        if (v != null && (v.contains("none") || v.contains("FERR")) && footTries < 4) {
+                        if (v != null && (v.contains("none") || v.contains("FERR")) && footTries < 3) {
                             footTries++;
-                            new Handler(Looper.getMainLooper())
-                                    .postDelayed(() -> boostSidebarFooter(), 3000);
+                            progressHandler.postDelayed(this::boostSidebarFooter, 1200);
                         } else if (v != null && (v.contains("ok") || v.contains("done"))) {
                             footTries = 0;
                         }
@@ -1876,10 +2005,79 @@ public class MainActivity extends AppCompatActivity {
             Log.d("OpenCode", "foot-fix fallo: " + e.getMessage());
         }
     }
+
+    /** La barra muere con el sidebar en cada navegacion SPA: una sola pasada
+     *  acotada y con retardo, en vez de encadenar inyecciones completas. */
+    private final Runnable footbarTask = this::boostSidebarFooter;
+
+    private void scheduleFootbar() {
+        progressHandler.removeCallbacks(footbarTask);
+        progressHandler.postDelayed(footbarTask, 220);
+    }
+
     private String basicAuth() {
         String raw = "opencode:" + LocalRuntime.serverPassword(this);
         return "Basic " + Base64.getEncoder().encodeToString(
                 raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String earlyScript() {
+        if (earlyScriptCache != null) return earlyScriptCache;
+        try (InputStream in = getAssets().open("oc-early.js")) {
+            earlyScriptCache = readAll(in);
+        } catch (Exception e) {
+            log("oc-early.js no disponible: " + e);
+            earlyScriptCache = "";
+        }
+        return earlyScriptCache;
+    }
+
+    private static final class IndexDoc {
+        final String html;
+        final String csp;
+
+        IndexDoc(String html, String csp) {
+            this.html = html;
+            this.csp = csp;
+        }
+    }
+
+    /** Descarga el HTML del servidor local con la misma auth que el WebView. */
+    private IndexDoc fetchIndexDoc(String pathAndQuery) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(URL + pathAndQuery).openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(2500);
+            c.setReadTimeout(4000);
+            c.setUseCaches(false);
+            c.setRequestProperty("Authorization", basicAuth());
+            c.setRequestProperty("Accept", "text/html");
+            c.setRequestProperty("Accept-Encoding", "identity");
+            c.setRequestProperty("User-Agent", "opencode-android");
+            if (c.getResponseCode() != 200) return null;
+            String type = c.getContentType();
+            if (type != null && !type.toLowerCase(Locale.ROOT).contains("text/html")) {
+                return null;
+            }
+            return new IndexDoc(readAll(c.getInputStream()),
+                    c.getHeaderField("Content-Security-Policy"));
+        } catch (Exception e) {
+            log("early html: " + e);
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private String injectEarlyScript(String html) {
+        String tag = "<script src=\"/oc-early.js\"></script>";
+        int head = html.indexOf("<head>");
+        if (head >= 0) {
+            int at = head + "<head>".length();
+            return html.substring(0, at) + tag + html.substring(at);
+        }
+        return tag + html;
     }
 
     /** Carga con Basic auth para el servidor local (la UI v2 la exige). */
@@ -2166,6 +2364,7 @@ public class MainActivity extends AppCompatActivity {
         setLangText(R.id.logTitle, T("Registro", "Log"));
         setLangText(R.id.txtLog, T("Listo. Pulsa Iniciar y abrir.", "Ready. Press Start and open."));
         setLangText(R.id.txtStatus, T("Servidor ?", "Server ?"));
+        setLangText(R.id.splashRetry, T("Reintentar", "Retry"));
         refreshUpdateBtn();
     }
     private void setLangText(int id, String s) {
@@ -3462,15 +3661,13 @@ private void refreshAppUpdateBtn() {
             restoreFabPos();
             if (web.getUrl() != null) {
                 injectEdgeCss();
-                flattenViewportFrame();
-                boostSidebarFooter();
-                redirectHelpToIssues();
-                rebrandDesktopToMobile();
-                shimAutoAccept();
-                hideShortcutsSettings();
-            shimUsageTap();
+                scheduleFootbar();
             }
-            snack(T("Pantalla completa: el boton abre el menu", "Fullscreen: the button opens the menu"));
+            // En el arranque el splash sigue visible: no se tapa con el aviso.
+            if (splashDone) {
+                snack(T("Pantalla completa: el boton abre el menu",
+                        "Fullscreen: the button opens the menu"));
+            }
         }
     }
 
@@ -3599,28 +3796,39 @@ private void refreshAppUpdateBtn() {
         try {
             web.evaluateJavascript(
                     "(function(){try{"
-                    + "var vw=window.innerWidth,vh=window.innerHeight,n=0,who=[];"
-                    + "Array.prototype.forEach.call(document.querySelectorAll('*'),function(e){"
-                    + "var r=e.getBoundingClientRect();"
+                    + "var vw=window.innerWidth,vh=window.innerHeight;"
+                    // Solo la carcasa (hasta 5 niveles): recorrer todo el DOM
+                    // y escribir estilos intercalados fuerza reflujo por nodo.
+                    + "var root=document.getElementById('root')||document.body;"
+                    + "var list=[document.body,root],level=[root];"
+                    + "for(var d=0;d<5&&list.length<400;d++){var next=[];"
+                    + "for(var i=0;i<level.length&&list.length<400;i++){"
+                    + "var kids=level[i].children;"
+                    + "for(var j=0;j<kids.length&&list.length<400;j++){"
+                    + "next.push(kids[j]);list.push(kids[j]);}}"
+                    + "level=next;if(!level.length)break;}"
+                    + "var todo=[];"
+                    + "for(var i=0;i<list.length;i++){var e=list[i],r=e.getBoundingClientRect();"
                     + "var full=(r.width>=vw-8&&r.height>=vh-8&&r.left<=8&&r.top<=8);"
                     + "var big=(r.width>=vw*0.8&&r.height>=vh*0.4);"
-                    + "if(!(full||big))return;"
-                    + "var cs=getComputedStyle(e);var t=false;"
-                    + "if((cs.borderWidth!=='0px'&&cs.borderStyle!=='none')"
-                    + "||cs.boxShadow!=='none'||cs.outlineStyle!=='none'){"
-                    + "e.style.setProperty('border','0','important');"
-                    + "e.style.setProperty('box-shadow','none','important');"
-                    + "e.style.setProperty('outline','none','important');t=true;}"
+                    + "if(!(full||big))continue;"
+                    + "var cs=getComputedStyle(e);"
+                    + "var bs=((cs.borderWidth!=='0px'&&cs.borderStyle!=='none')"
+                    + "||cs.boxShadow!=='none'||cs.outlineStyle!=='none');"
                     + "var fl=cs.filter||'';"
-                    + "if(fl&&fl!=='none'&&fl.indexOf('drop-shadow')>=0){"
-                    + "e.style.setProperty('filter','none','important');"
-                    + "e.style.setProperty('-webkit-filter','none','important');t=true;}"
+                    + "var fi=(fl&&fl!=='none'&&fl.indexOf('drop-shadow')>=0);"
                     + "var bi=cs.backgroundImage||'';"
-                    + "if(bi&&bi!=='none'){"
-                    + "e.style.setProperty('background-image','none','important');t=true;}"
-                    + "if(t){n++;if(who.length<6)who.push(e.tagName+'.'+String(e.className).split(' ')[0]"
-                    + "+'@'+Math.round(r.width)+'x'+Math.round(r.height));}});"
-                    + "return n+'|'+who.join(',');}catch(err){return -1;}})()",
+                    + "var im=(bi&&bi!=='none');"
+                    + "if(bs||fi||im)todo.push([e,bs,fi,im,r.width,r.height]);}"
+                    // Lecturas terminadas: ahora se aplican los cambios de golpe.
+                    + "for(var k=0;k<todo.length;k++){var e=todo[k][0];"
+                    + "if(todo[k][1]){e.style.setProperty('border','0','important');"
+                    + "e.style.setProperty('box-shadow','none','important');"
+                    + "e.style.setProperty('outline','none','important');}"
+                    + "if(todo[k][2]){e.style.setProperty('filter','none','important');"
+                    + "e.style.setProperty('-webkit-filter','none','important');}"
+                    + "if(todo[k][3])e.style.setProperty('background-image','none','important');}"
+                    + "return todo.length+'|';}catch(err){return -1;}})()",
                     v -> { if (v != null && !v.equals("\"0|\"")) Log.d("OpenCode", "edge-fix: " + v); });
         } catch (Exception e) {
             Log.d("OpenCode", "edge-fix fallo: " + e.getMessage());
@@ -3633,21 +3841,22 @@ private void refreshAppUpdateBtn() {
         try {
             web.evaluateJavascript(
                     "(function(){try{"
-                    + "var n=0;"
-                    + "function walk(e){"
-                    + "if(e.nodeType===3){var t=e.nodeValue;"
-                    + "if(t&&t.indexOf('OpenCode Desktop')>=0){"
-                    + "e.nodeValue=t.split('OpenCode Desktop').join('OpenCode Mobile');n++;}}"
-                    + "else if(e.nodeType===1){"
-                    + "if(e.tagName==='SCRIPT'||e.tagName==='STYLE')return;"
-                    + "var c=e.childNodes;for(var i=0;i<c.length;i++)walk(c[i]);"
-                    + "if(e.childNodes.length===1&&e.childNodes[0].nodeType===3"
-                    + "&&e.childNodes[0].nodeValue.trim()==='Desktop'){"
-                    + "e.childNodes[0].nodeValue='Mobile';n++;}}}"
-                    + "walk(document.body);"
+                    // TreeWalker de textos: no concatena subarboles ni recorre
+                    // elementos, y el observador se agrupa para no repetirlo
+                    // en cada mutacion del streaming.
+                    + "function fix(){var n=0,w=document.createTreeWalker("
+                    + "document.body,NodeFilter.SHOW_TEXT,null),t;"
+                    + "while(t=w.nextNode()){var v=t.nodeValue;if(!v)continue;"
+                    + "if(v.indexOf('OpenCode Desktop')>=0){"
+                    + "t.nodeValue=v.split('OpenCode Desktop').join('OpenCode Mobile');n++;}"
+                    + "else if(v.trim()==='Desktop'){t.nodeValue='Mobile';n++;}}"
+                    + "return n;}"
+                    + "var n=fix();"
                     + "if(!window.__ocBrandObs&&window.MutationObserver){"
-                    + "window.__ocBrandObs=new MutationObserver(function(m){"
-                    + "for(var i=0;i<m.length;i++)if(m[i].type==='childList'){walk(document.body);break;}});"
+                    + "window.__ocBrandObs=new MutationObserver(function(){"
+                    + "if(window.__ocBrandT)return;"
+                    + "window.__ocBrandT=setTimeout(function(){"
+                    + "window.__ocBrandT=null;fix();},350);});"
                     + "window.__ocBrandObs.observe(document.body,{childList:true,subtree:true});}"
                     + "return 'brand:'+n;}catch(err){return 'brand-ERR:'+err;}})()",
                     v -> Log.d("OpenCode", "brand-fix: " + v));
@@ -3694,7 +3903,9 @@ private void refreshAppUpdateBtn() {
                     + "var was=on();paint(sw,!was);"
                     + "try{ocConfig.toggleAutoAccept();}catch(e){paint(sw,was);}"
                     + "},true);"
-                    + "if(window.MutationObserver)new MutationObserver(apply)"
+                    + "var t=null;"
+                    + "if(window.MutationObserver)new MutationObserver(function(){"
+                    + "if(t)return;t=setTimeout(function(){t=null;apply();},250);})"
                     + ".observe(document.body,{childList:true,subtree:true});"
                     + "apply();setTimeout(apply,400);return 'auto-shim';}catch(e){return 'ERR:'+e;}})()",
                     v -> Log.d("OpenCode", "auto-shim: " + v));
@@ -3709,33 +3920,35 @@ private void refreshAppUpdateBtn() {
                     "(function(){try{"
                     + "if(window.__ocHideShortcuts)return 'ya';"
                     + "window.__ocHideShortcuts=true;"
-                    + "function hide(){var n=0,now=Date.now();"
-                    + "var all=document.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper]');"
-                    + "var s0=document.querySelectorAll('[data-variant=settings] [data-slot=tabs-v2-trigger-wrapper]');"
-                    + "if(!window.__ocHideTick||now-window.__ocHideTick>4000){window.__ocHideTick=now;"
-                    + "var vs=[];for(var q=0;q<all.length;q++)vs.push((all[q].getAttribute('data-value')||'-')+'='+(all[q].textContent||'').trim());"
-                    + "try{ocConfig.debug('tick all='+all.length+' set='+s0.length+' '+vs.join('|'));}catch(e){}}"
-                    + "var ws=document.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper][data-value=shortcuts]');"
+                    // Solo actua si hay ajustes/dialogo abierto: en el chat no
+                    // cuesta nada y ya no queda un interval de 600 ms eterno.
+                    + "function hide(){"
+                    + "var root=document.querySelector('[data-variant=settings]')"
+                    + "||document.querySelector('[role=dialog]');"
+                    + "if(!root)return 0;"
+                    + "var n=0;"
+                    + "var ws=root.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper][data-value=shortcuts]');"
                     + "for(var i=0;i<ws.length;i++){"
                     + "ws[i].style.display='none';ws[i].setAttribute('aria-hidden','true');n++;}"
-                    + "var cs=document.querySelectorAll('[data-slot=tabs-v2-content]');"
+                    + "var cs=root.querySelectorAll('[data-slot=tabs-v2-content]');"
                     + "for(var j=0;j<cs.length;j++){var h=cs[j].querySelector('h2');"
                     + "var x=(h?h.textContent:cs[j].textContent)||'';"
                     + "if(/keyboard shortcuts|atajos de teclado/i.test(x)){"
                     + "cs[j].style.display='none';n++;}}"
-                    + "if(n===0&&(!window.__ocTxtT||now-window.__ocTxtT>2000)){window.__ocTxtT=now;"
-                    + "var dlg=document.querySelector('[role=dialog]')||document.body;"
-                    + "var tn=dlg.getElementsByTagName('*');"
+                    + "if(n===0){var tn=root.getElementsByTagName('*');"
                     + "for(var m=0;m<tn.length;m++){var el=tn[m];"
                     + "if(el.children.length===0){var tx=(el.textContent||'').trim();"
                     + "if(tx==='Shortcuts'||tx==='Atajos'||tx==='Atajos de teclado'){"
                     + "var w=el.closest('[data-slot=tabs-v2-trigger-wrapper]')||el.closest('[data-value]');"
                     + "if(w){w.style.display='none';w.setAttribute('aria-hidden','true');n++;}}}}}"
-                    + "if(n>0){try{ocConfig.debug('hide '+n+' all='+all.length+' set='+s0.length);}catch(e){}}"
                     + "return n;}"
-                    + "if(window.__ocHideTimer)clearInterval(window.__ocHideTimer);"
-                    + "window.__ocHideTimer=setInterval(hide,600);"
-                    + "var r=hide();return 'shortcuts:'+r;}catch(e){return 'ERR:'+e;}})()",
+                    + "function schedule(){if(window.__ocHideT)return;"
+                    + "window.__ocHideT=setTimeout(function(){"
+                    + "window.__ocHideT=null;hide();},300);}"
+                    + "if(window.MutationObserver)new MutationObserver(schedule)"
+                    + ".observe(document.body,{childList:true,subtree:true});"
+                    + "var r=hide();setTimeout(hide,700);setTimeout(hide,2200);"
+                    + "return 'shortcuts:'+r;}catch(e){return 'ERR:'+e;}})()",
                     v -> Log.d("OpenCode", "shortcuts-hide: " + v));
         } catch (Exception e) {
             Log.d("OpenCode", "shortcuts-hide fallo: " + e.getMessage());
@@ -3791,7 +4004,10 @@ private void refreshAppUpdateBtn() {
                     + "return n;}"
                     + "var c=fix();"
                     + "if(!window.__ocHelpObs&&window.MutationObserver){"
-                    + "window.__ocHelpObs=new MutationObserver(function(){fix();});"
+                    + "window.__ocHelpObs=new MutationObserver(function(){"
+                    + "if(window.__ocHelpT)return;"
+                    + "window.__ocHelpT=setTimeout(function(){"
+                    + "window.__ocHelpT=null;fix();},250);});"
                     + "window.__ocHelpObs.observe(document.documentElement,"
                     + "{childList:true,subtree:true,attributes:true,attributeFilter:['href']});}"
                     + "if(window.__ocHelpClk)document.removeEventListener('click',window.__ocHelpClk,true);"

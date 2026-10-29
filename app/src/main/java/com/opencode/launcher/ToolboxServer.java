@@ -23,7 +23,9 @@ import java.util.Map;
  */
 public final class ToolboxServer {
     private static final String TAG = "OpenCodeToolbox";
-    public static final int PORT = 4199;
+    // Puerto propio por canal: v1 (4098) usa 4198 y v2 (4099) usa 4199.
+    // Si ambas apps comparten puerto, la segunda no puede arrancar el suyo.
+    public static final int PORT = BuildConfig.SERVER_PORT + 100;
 
     private static ServerSocket socket;
     private static Thread thread;

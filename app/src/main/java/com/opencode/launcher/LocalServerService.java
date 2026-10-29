@@ -120,7 +120,7 @@ public class LocalServerService extends Service {
         PendingIntent stopPi = PendingIntent.getService(this, 1, stop, fl);
 
         return new NotificationCompat.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                .setSmallIcon(R.drawable.ic_stat_opencode)
                 .setContentTitle(ServerWatch.t(this, "OpenCode local", "OpenCode local"))
                 .setContentText(ServerWatch.t(this, "Servidor en 127.0.0.1:", "Server on 127.0.0.1:") + BuildConfig.SERVER_PORT)
                 .setContentIntent(pi)

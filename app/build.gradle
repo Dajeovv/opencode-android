@@ -10,11 +10,13 @@ android {
         applicationId "com.opencode.launcher"
         minSdk 26
         targetSdk 34
-        versionCode 172
-        versionName "4.0.1"
+        versionCode 174
+        versionName "4.0.2"
         buildConfigField "int", "SERVER_PORT", "4096"
         // Version del binario empaquetado en jniLibs. Actualizarla al cambiarlo.
         buildConfigField "String", "OPENCODE_VERSION", "\"1.19.4\""
+        // v1: canal 4.x del launcher y runtime opencode 1.x.
+        buildConfigField "boolean", "V2", "false"
         ndk {
             abiFilters 'arm64-v8a'
         }
