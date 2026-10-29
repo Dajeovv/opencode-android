@@ -1,0 +1,12 @@
+#!/system/bin/sh
+# Trampolin de ripgrep dentro del directorio nativo del APK (apk_data_file),
+# la unica ruta que Android deja ejecutar sin root. El rg real vive en el
+# directorio nativo (librg.so) y se lanza con el linker del sistema.
+R="${OC_RG_REAL:-$OPENCODE_NATIVE_LIB_DIR/librg.so}"
+if [ ! -f "$R" ]; then
+  echo "rg: no existe $R" >&2
+  exit 127
+fi
+P="${PREFIX:-$HOME/../usr}"
+LD_LIBRARY_PATH="$P/lib:$HOME/lib:$OPENCODE_NATIVE_LIB_DIR" \
+  exec /system/bin/linker64 "$R" "$@"

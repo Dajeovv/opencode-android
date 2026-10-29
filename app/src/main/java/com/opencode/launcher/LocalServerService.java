@@ -39,6 +39,7 @@ public class LocalServerService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            AgentEventWatcher.stop();
             LocalRuntime.stop();
             ToolboxServer.stop();
             stopForeground(true);
@@ -66,7 +67,16 @@ public class LocalServerService extends Service {
         // foreground, asi que puede esperar en segundo plano.
         new Thread(() -> {
             try {
-                LocalRuntime.start(getApplicationContext(), BuildConfig.SERVER_PORT);
+                boolean ok = LocalRuntime.start(getApplicationContext(), BuildConfig.SERVER_PORT);
+                if (ok) {
+                    // La UI v2 corta su EventSource al ocultarse: el servicio
+                    // mantiene uno propio para avisar en segundo plano.
+                    if (BuildConfig.V2) {
+                        AgentEventWatcher.start(getApplicationContext(), BuildConfig.SERVER_PORT);
+                    }
+                } else {
+                    Log.w("OpenCodeLocal", "runtime nativo sin respuesta");
+                }
             } catch (Exception e) {
                 Log.w("OpenCodeLocal", "no se pudo arrancar el runtime: " + e, e);
                 new Handler(Looper.getMainLooper()).post(() -> {
@@ -90,6 +100,7 @@ public class LocalServerService extends Service {
 
     @Override
     public void onDestroy() {
+        AgentEventWatcher.stop();
         LocalRuntime.stop();
         ToolboxServer.stop();
         super.onDestroy();
@@ -120,7 +131,7 @@ public class LocalServerService extends Service {
         PendingIntent stopPi = PendingIntent.getService(this, 1, stop, fl);
 
         return new NotificationCompat.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+                .setSmallIcon(R.drawable.ic_stat_opencode)
                 .setContentTitle(ServerWatch.t(this, "OpenCode local", "OpenCode local"))
                 .setContentText(ServerWatch.t(this, "Servidor en 127.0.0.1:", "Server on 127.0.0.1:") + BuildConfig.SERVER_PORT)
                 .setContentIntent(pi)

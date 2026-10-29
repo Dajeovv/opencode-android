@@ -1,0 +1,11 @@
+#!/system/bin/sh
+# Trampolin de git dentro del directorio nativo del APK (apk_data_file),
+# la unica ruta que Android deja ejecutar sin root. El git real vive en el
+# prefijo de la app y se lanza con el linker del sistema.
+G="${OC_GIT_REAL:-$PREFIX/bin/git}"
+if [ ! -f "$G" ]; then
+  echo "git: no existe $G" >&2
+  exit 127
+fi
+LD_LIBRARY_PATH="$PREFIX/lib:$HOME/lib:$OPENCODE_NATIVE_LIB_DIR" \
+  exec /system/bin/linker64 "$G" "$@"

@@ -17,6 +17,8 @@ public class UpdateCheckReceiver extends BroadcastReceiver {
         final PendingResult pr = goAsync();
         new Thread(() -> {
             try {
+                // v2: el runtime va dentro del APK; solo se avisa del launcher.
+                if (!BuildConfig.V2) {
                 // Binario opencode: avisar solo si nadie lo hizo ya para esta version.
                 try {
                     boolean local = LocalRuntime.available(ctx);
@@ -48,6 +50,7 @@ public class UpdateCheckReceiver extends BroadcastReceiver {
                         if (nm != null) nm.cancel(ServerWatch.NID_OC);
                     }
                 } catch (Exception ignored) {
+                }
                 }
                 // Launcher: avisar si el release trae APK mas nuevo que esta version.
                 try {

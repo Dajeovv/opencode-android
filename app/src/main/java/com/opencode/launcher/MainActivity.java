@@ -33,6 +33,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -50,6 +51,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -66,6 +68,7 @@ import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URL;
+import java.io.ByteArrayInputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -130,6 +133,8 @@ public class MainActivity extends AppCompatActivity {
             + " command -v opencode; opencode --version 2>&1 | head -1; echo setup-noroot-ok\n";
 
     private WebView web;
+    /** JS que se inyecta antes del bundle (cache de /provider y git de proyectos). */
+    private String earlyScriptCache;
     private View boxContent;
     private MaterialCardView cardWeb;
     private TextView txtStatus;
@@ -149,14 +154,23 @@ public class MainActivity extends AppCompatActivity {
     private long splashStart = 0;
     private String pendingSplashSnack;
     private boolean fullscreen = false;
+    /** Alto del teclado en px; 0 cuando esta oculto. */
+    private int imeBottom = 0;
+    /** Padding base del contenido: 0 en chat, 16dp en el panel. */
+    private int chatPad = 0;
     private boolean urlLoading = false;
+    /** Generacion de carga del documento v2: una nueva anula la anterior. */
+    private int webLoadGen = 0;
     private boolean advancedOpen = false;
     private boolean serverOpen = false;
     /** Modo sin root: true hasta que la comprobacion de arranque diga lo contrario. */
     /** Descarga del APK de Termux (paso 1 sin root). */
     /** Avisos del agente: solo suenan si NO miras el chat. */
     private boolean appForeground = false;
+    private static volatile boolean uiForeground = false;
+    private static volatile boolean uiFullscreen = false;
     private int agentNotifId = 100;
+    private String pendingSessionId;
     private PendingShare pendingShare;
     private BottomSheetDialog shareDialog;
     private BottomSheetDialog shareSessionPicker;
@@ -236,6 +250,29 @@ public class MainActivity extends AppCompatActivity {
         web = findViewById(R.id.webView);
         boxContent = findViewById(R.id.boxContent);
         cardWeb = findViewById(R.id.cardWeb);
+        // El teclado no redimensiona la ventana (edge-to-edge), asi que el
+        // WebView se queda a altura completa y el compositor acaba detras del
+        // IME hasta que se cierra y abre otra vez. Se resta el alto del teclado
+        // al contenido y se avisa a la SPA para que recolque en el acto.
+        ViewCompat.setOnApplyWindowInsetsListener(boxContent, (v, insets) -> {
+            int ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            if (ime != imeBottom) {
+                imeBottom = ime;
+                applyChatPadding();
+                v.postDelayed(() -> {
+                    if (web == null) return;
+                    web.requestLayout();
+                    try {
+                        web.evaluateJavascript(
+                                "(function(){try{window.dispatchEvent(new Event('resize'));"
+                                        + "if(window.visualViewport){window.visualViewport.dispatchEvent(new Event('resize'));}"
+                                        + "}catch(e){}})()", null);
+                    } catch (Exception ignored) {
+                    }
+                }, 80);
+            }
+            return insets;
+        });
         txtStatus = findViewById(R.id.txtStatus);
         txtLog = findViewById(R.id.txtLog);
         statusDot = findViewById(R.id.statusDot);
@@ -366,6 +403,7 @@ public class MainActivity extends AppCompatActivity {
             ToolboxService.installBundled(this);
         }
         pendingShare = parseShareIntent(getIntent());
+        pendingSessionId = getIntent().getStringExtra("session_id");
         if (pendingShare == null) {
             autoOpenIfRunning();
         } else {
@@ -382,10 +420,9 @@ public class MainActivity extends AppCompatActivity {
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
-        // La UI de opencode es de escritorio: permitir pellizcar para ampliar
-        // vistas apretadas (ajustes, diffs). Sin botones en pantalla.
-        s.setSupportZoom(true);
-        s.setBuiltInZoomControls(true);
+        // Sin zoom por pellizco: en movil movia la vista y descolocaba el chat.
+        s.setSupportZoom(false);
+        s.setBuiltInZoomControls(false);
         s.setDisplayZoomControls(false);
         s.setDomStorageEnabled(true);
         s.setLoadWithOverviewMode(true);
@@ -408,14 +445,106 @@ public class MainActivity extends AppCompatActivity {
             WebView.setWebContentsDebuggingEnabled(true);
         }
         web.setWebViewClient(new WebViewClient() {
+            /**
+             * La SPA carga su bundle al final del body. Para que el cache de
+             * /provider y el arreglo de git existan antes, se sirve el HTML
+             * con un <script src="/oc-early.js"> extra. La CSP permite
+             * scripts same-origin, asi que no hace falta 'unsafe-inline'.
+             */
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view,
+                    WebResourceRequest request) {
+                try {
+                    Uri u = request.getUrl();
+                    String path = u.getPath();
+                    if (path == null) return null;
+                    if (BuildConfig.V2) {
+                        // v2: la UI no trae shims de v1, pero si necesita el
+                        // viewport bloqueado para que el pellizco no haga zoom.
+                        if ("/sw.js".equals(path)) {
+                            // Sin fetch handler: el service worker de v2 cachea
+                            // el HTML sin el viewport bloqueado. Uno vacio deja
+                            // pasar todo por shouldInterceptRequest.
+                            byte[] js = ("self.addEventListener('install',function(e){self.skipWaiting()});"
+                                    + "self.addEventListener('activate',function(e){"
+                                    + "e.waitUntil(self.clients.claim())});")
+                                    .getBytes(StandardCharsets.UTF_8);
+                            Map<String, String> h = new HashMap<>();
+                            h.put("Cache-Control", "no-store");
+                            return new WebResourceResponse("application/javascript", "utf-8",
+                                    200, "OK", h, new ByteArrayInputStream(js));
+                        }
+                        String host = u.getHost();
+                        if (HOST.equals(host) || "localhost".equalsIgnoreCase(host)) {
+                            if (("/api/fs/list".equals(path) || "/api/fs/find".equals(path))
+                                    && "GET".equalsIgnoreCase(request.getMethod())) {
+                                WebResourceResponse filtered = filterFsResponse(u);
+                                if (filtered != null) return filtered;
+                                return null;
+                            }
+                        }
+                        if (!request.isForMainFrame()) return null;
+                        if (!"GET".equalsIgnoreCase(request.getMethod())) return null;
+                        if (!(HOST.equals(host) || "localhost".equalsIgnoreCase(host))) return null;
+                        String last = path.substring(path.lastIndexOf('/') + 1);
+                        if (last.contains(".")) return null;
+                        String q = u.getEncodedQuery();
+                        IndexDoc doc = fetchIndexDoc(path + (q == null ? "" : "?" + q));
+                        if (doc == null) return null;
+                        return htmlResponse(lockViewport(doc.html, doc.csp), doc.csp);
+                    }
+                    if ("/oc-early.js".equals(path)) {
+                        byte[] js = earlyScript().getBytes(StandardCharsets.UTF_8);
+                        Map<String, String> h = new HashMap<>();
+                        h.put("Cache-Control", "no-store");
+                        return new WebResourceResponse("application/javascript", "utf-8",
+                                200, "OK", h, new ByteArrayInputStream(js));
+                    }
+                    if (!request.isForMainFrame()) return null;
+                    if (!"GET".equalsIgnoreCase(request.getMethod())) return null;
+                    String host = u.getHost();
+                    if (!(HOST.equals(host) || "localhost".equalsIgnoreCase(host))) return null;
+                    // Solo documentos HTML: "/" y rutas SPA sin extension.
+                    String last = path.substring(path.lastIndexOf('/') + 1);
+                    if (last.contains(".")) return null;
+                    String q = u.getEncodedQuery();
+                    IndexDoc doc = fetchIndexDoc(path + (q == null ? "" : "?" + q));
+                    if (doc == null) return null;
+                    String html = injectEarlyScript(doc.html);
+                    return htmlResponse(html, doc.csp);
+                } catch (Exception e) {
+                    log("early intercept: " + e);
+                    return null;
+                }
+            }
+
+            @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                if (BuildConfig.V2 && url != null && url.startsWith(URL)
+                        && !url.contains("auth_token=")) {
+                    // Un reload de la web pierde el token y el service worker
+                    // sirve el HTML original (sin viewport bloqueado). Se
+                    // recarga con token y el documento de memoria.
+                    view.stopLoading();
+                    webLoad(url);
+                }
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 urlLoading = false;
-                hideSplash();
+                if (BuildConfig.V2) {
+                    ensureV2Doc(url);
+                    watchUiReady();
+                    bridgeNotifications();
+                    return;
+                }
+                watchUiReady();
                 injectEdgeCss();
                 flattenViewportFrame();
-                boostSidebarFooter();
+                scheduleFootbar();
                 bridgeNotifications();
                 redirectHelpToIssues();
                 rebrandDesktopToMobile();
@@ -427,16 +556,12 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 super.doUpdateVisitedHistory(view, url, isReload);
+                if (BuildConfig.V2) return;
                 // La web es SPA: al navegar (lista -> chat) no hay recarga.
+                // Los demas shims viven en observadores; aqui solo hay que
+                // reponer la barra del sidebar y el CSS (idempotente).
                 injectEdgeCss();
-                flattenViewportFrame();
-                boostSidebarFooter();
-                bridgeNotifications();
-                redirectHelpToIssues();
-                rebrandDesktopToMobile();
-                shimAutoAccept();
-                hideShortcutsSettings();
-            shimUsageTap();
+                scheduleFootbar();
             }
 
             @Override
@@ -674,20 +799,32 @@ public class MainActivity extends AppCompatActivity {
 
 
 
-        log("Pulsa Iniciar y abrir. Si el servidor ya corre, entras directo al chat.");
+        log(T("Pulsa Iniciar y abrir. Si el servidor ya corre, entras directo al chat.",
+                "Press Start and open. If the server is already running, you go straight to the chat."));
         // Next: no existe panel. Se oculta todo lo que no sea el chat; el
         // arranque vive en el splash y los fallos se reintentan ahi.
         if (chatOnly()) applyChatOnlyChrome();
         // El vig��a sobrevive solo hasta reiniciar: rearmarlo siempre (si esta OFF no hace nada).
         ServerWatch.arm(this);
         // Chequeo diario de updates aunque la app este cerrada (solo avisa).
-        ServerWatch.armUpdateCheck(this);
+        if (!BuildConfig.V2_LAB) ServerWatch.armUpdateCheck(this);
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        String sid = intent == null ? null : intent.getStringExtra("session_id");
+        if (sid != null && !sid.isEmpty()) {
+            pendingSessionId = sid;
+            if (serverOpen && web != null && web.getUrl() != null) {
+                pendingSessionId = null;
+                setFullscreen(true);
+                webLoad(shareSessionUrl(sid));
+            } else {
+                enterChatBlocking();
+            }
+        }
         PendingShare share = parseShareIntent(intent);
         if (share != null) {
             pendingShare = share;
@@ -698,6 +835,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         appForeground = false;
+        uiForeground = false;
         saveFabPos();
         super.onPause();
     }
@@ -706,11 +844,15 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         appForeground = true;
+        uiForeground = true;
         web.onResume();
         web.resumeTimers();
         checkStatus(false);
-        checkForUpdate(false);
-        checkLauncherUpdate(false);
+        if (!BuildConfig.V2_LAB) {
+            // v2 lleva opencode dentro del APK: el updater del runtime no aplica.
+            if (!BuildConfig.V2) checkForUpdate(false);
+            checkLauncherUpdate(false);
+        }
         // Al volver de Ajustes/Termux se recalculan los pasos: la tira de
         // estados y el oscurecido de Iniciar quedan al dia solos.
         // Si el usuario fue a Ajustes a dar el permiso de archivos, el arranque
@@ -884,6 +1026,8 @@ public class MainActivity extends AppCompatActivity {
 
     /** Updater oficial del runtime: descarga, verifica SHA-256, instala y reinicia. */
     private void startRuntimeUpdate() {
+        // v2 trae el runtime dentro del APK: no se actualiza por separado.
+        if (BuildConfig.V2) return;
         if (updLatest.isEmpty()) return;
         if (!hasAllFilesAccess()) {
             snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
@@ -904,6 +1048,7 @@ public class MainActivity extends AppCompatActivity {
 
     /** Descarga e instala la nueva version del launcher. */
     private void installAppUpdateNow() {
+        if (BuildConfig.V2_LAB) return;
         if (!appUpdatePending || appUpdUrl.isEmpty()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 && !getPackageManager().canRequestPackageInstalls()) {
@@ -919,15 +1064,17 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             StringBuilder t = new StringBuilder();
             try {
-                t.append("0) runtime local (proot)...\n");
+                t.append(T("0) runtime local (proot)...\n", "0) local runtime (proot)...\n"));
                 LocalServerService.start(this);
-                t.append("Servicio lanzado; esperando el puerto ").append(PORT).append("...\n");
+                t.append(T("Servicio lanzado; esperando el puerto ", "Service started; waiting for port "))
+                        .append(PORT).append("...\n");
                 boolean open = waitForPort(20000);
                 boolean httpOk = false;
                 if (open) {
-                    t.append("Puerto abierto; esperando el primer HTTP 200...\n");
+                    t.append(T("Puerto abierto; esperando el primer HTTP 200...\n",
+                            "Port open; waiting for the first HTTP 200...\n"));
                     httpOk = waitForHttp(45000);
-                    if (httpOk) applyAutoPermissions(autoPerm());
+                    if (httpOk && !BuildConfig.V2 && !BuildConfig.V2_LAB) applyAutoPermissions(autoPerm());
                 }
                 final boolean done = open;
                 final boolean httpOkF = httpOk;
@@ -941,8 +1088,9 @@ public class MainActivity extends AppCompatActivity {
                     txtStatus.setText(done ? T("Servidor abierto", "Server open")
                             : T("Servidor sigue cerrado", "Server still closed"));
                     log(transcript + (done
-                            ? "OK: runtime local en " + URL
-                            : "FALLO: revisa logcat con etiqueta OpenCodeLocal"));
+                            ? T("OK: runtime local en ", "OK: local runtime at ") + URL
+                            : T("FALLO: revisa logcat con etiqueta OpenCodeLocal",
+                                    "FAILED: check logcat tag OpenCodeLocal")));
                     if (done) {
                         getSharedPreferences("app", MODE_PRIVATE).edit()
                                 .putBoolean("onboarding_done", true)
@@ -960,7 +1108,7 @@ public class MainActivity extends AppCompatActivity {
                         if (httpOkF) {
                             setSplashStatus(T("Abriendo el chat...", "Opening the chat..."));
                             enterChatLocked(() -> {
-                                webLoad(URL);
+                                webLoad(takeChatUrl());
                                 setFullscreen(true);
                             });
                         } else {
@@ -1744,7 +1892,73 @@ public class MainActivity extends AppCompatActivity {
         public void debug(String msg) {
             Log.d("OpenCode", "auto-shim-js: " + msg);
         }
+
+        /** Ruta canonica de HOME, para migrar rutas antiguas de la UI. */
+        @JavascriptInterface
+        public String homeDir() {
+            return LocalRuntime.homeDir(MainActivity.this).getAbsolutePath();
+        }
+
+        /**
+         * Prepara el repo git de un proyecto antes de que el servidor lo vea.
+         * Devuelve la raiz del repo (o el propio directorio si no se pudo).
+         */
+        @JavascriptInterface
+        public String ensureProjectGit(String dir) {
+            try {
+                return LocalRuntime.ensureProjectGit(MainActivity.this, dir);
+            } catch (Exception e) {
+                Log.w("OpenCode", "ensureProjectGit: " + e);
+                return dir == null ? "" : dir;
+            }
+        }
+
+        /** La SPA ya pinto contenido real: se puede retirar el splash. */
+        @JavascriptInterface
+        public void uiReady() {
+            runOnUiThread(MainActivity.this::hideSplash);
+        }
     }
+
+    /**
+     * onPageFinished llega con el HTML vacio: la SPA tarda varios segundos en
+     * hidratar la instancia. Si se retira el splash ahi se ve un negro largo
+     * (el "congelado" al abrir sesion). Se espera a que #root tenga contenido.
+     */
+    private void watchUiReady() {
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__ocReadyObs)return 'ya';"
+                    + "var root=document.getElementById('root');"
+                    + "if(!root)return 'no-root';"
+                    + "var done=false;"
+                    + "function check(){if(done)return;"
+                    + "var n=root.querySelectorAll('*').length;"
+                    + "if(n<40)return;"
+                    + "var sig=root.querySelector('textarea,[contenteditable=\"true\"],nav,[data-slot]');"
+                    + "if(!sig&&n<120)return;"
+                    + "done=true;"
+                    + "if(window.__ocReadyObs)window.__ocReadyObs.disconnect();"
+                    + "try{ocConfig.uiReady();}catch(e){}}"
+                    + "window.__ocReadyObs=new MutationObserver(function(){"
+                    + "if(window.__ocReadyT)return;"
+                    + "window.__ocReadyT=setTimeout(function(){"
+                    + "window.__ocReadyT=null;check();},120);});"
+                    + "window.__ocReadyObs.observe(root,{childList:true,subtree:true});"
+                    + "setTimeout(check,700);"
+                    + "return 'ready-watch';}catch(e){return 'ERR:'+e;}})()",
+                    v -> Log.d("OpenCode", "ui-ready: " + v));
+        } catch (Exception e) {
+            Log.d("OpenCode", "ui-ready fallo: " + e.getMessage());
+            hideSplash();
+        }
+        // Red de seguridad: nunca dejar el splash eterno si la SPA no arranca.
+        progressHandler.removeCallbacks(splashFallback);
+        progressHandler.postDelayed(splashFallback, 15000);
+    }
+
+    private final Runnable splashFallback = this::hideSplash;
 
     /** Instala el puente en la pagina (la SPA lo conserva; se repone en cada carga). */
     private void bridgeNotifications() {
@@ -1778,9 +1992,17 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** El servicio consulta esto para no duplicar avisos si el chat esta a la vista. */
+    static boolean isAgentUiVisible() {
+        return uiForeground && uiFullscreen;
+    }
+
     /** Aviso de agente: solo si NO estas mirando el chat (si no, ya lo ves). */
     private void notifyAgentDone(String title, String body) {
         try {
+            // En v2 el servicio mantiene el SSE y avisa el solo; la web no
+            // debe duplicarlo cuando su conexion sigue viva.
+            if (BuildConfig.V2 && AgentEventWatcher.isConnected()) return;
             if (appForeground && fullscreen) return;
             ensureAgentChannel();
             Intent open = new Intent(this, MainActivity.class);
@@ -1811,63 +2033,84 @@ public class MainActivity extends AppCompatActivity {
     private int footTries = 0;
 
     private void boostSidebarFooter() {
+        // La UI de v2 ya coloca Ajustes/Ayuda al final del sidebar.
+        if (BuildConfig.V2) return;
         try {
             web.evaluateJavascript(
                     "(function(){try{"
                     + "var old=document.getElementById('oc-footbar');"
                     + "var labels=['Ajustes','Settings','Ayuda','Help'];"
-                    + "function isLabel(e){if(!e)return false;"
-                    + "var t=(e.textContent||'').trim();return labels.indexOf(t)>=0;}"
-                    + "var holders=[];"
-                    + "Array.prototype.forEach.call(document.querySelectorAll('*'),function(e){"
-                    + "if(holders.length<4&&isLabel(e))holders.push(e);});"
-                    + "if(!holders.length){if(old)old.remove();return 'none';}"
-                    + "function hideDupes(){"
-                    + "Array.prototype.forEach.call(document.querySelectorAll('*'),function(e){"
-                    + "if(e.closest&&e.closest('#oc-footbar'))return;"
-                    + "var t=(e.textContent||'').trim();"
-                    + "if(labels.indexOf(t)>=0){"
-                    + "var r=e.closest?(e.closest('button')||e.closest('a')||e.closest('[role=\"button\"]')):null;"
-                    + "(r||e).style.setProperty('display','none','important');}});}"
-                    + "if(old){hideDupes();return 'done';}"
-                    + "var rows=[];"
-                    + "holders.forEach(function(h){"
-                    + "var r=h.closest? (h.closest('button')||h.closest('a')||h.closest('[role=\"button\"]')):null;"
-                    + "if(!r)r=h;"
-                    + "if(rows.indexOf(r)<0)rows.push(r);});"
-                    + "if(rows.length<1)return 'none';"
-                    + "var sc=rows[0];while(sc&&sc!==document.body){"
+                    // Recorrer nodos de texto evita el textContent de cada
+                    // elemento (coste O(n^2) en paginas con muchos mensajes).
+                    + "function scan(){var out=[],w=document.createTreeWalker("
+                    + "document.body,NodeFilter.SHOW_TEXT,null),n;"
+                    + "while((n=w.nextNode())&&out.length<12){"
+                    + "var t=(n.nodeValue||'').trim();"
+                    + "if(labels.indexOf(t)<0)continue;"
+                    + "var e=n.parentElement;if(!e)continue;"
+                    + "if(e.closest&&e.closest('#oc-footbar'))continue;"
+                    + "var r=(e.closest('button')||e.closest('a')||e.closest('[role=\"button\"]')||e);"
+                    + "var seen=false;"
+                    + "for(var q=0;q<out.length;q++)if(out[q][1]===r){seen=true;break;}"
+                    + "if(!seen)out.push([t,r]);}"
+                    + "return out;}"
+                    + "function hide(list){for(var i=0;i<list.length;i++)"
+                    + "list[i][1].style.setProperty('display','none','important');}"
+                    + "if(old){hide(scan());return 'done';}"
+                    + "var all=scan();"
+                    + "if(!all.length)return 'none';"
+                    // La SPA pinta dos copias de Settings/Help: a la barra va
+                    // solo la primera de cada etiqueta y el resto se oculta.
+                    + "var list=[],dups=[];"
+                    + "for(var i=0;i<all.length;i++){var lab=all[i][0],seen=false;"
+                    + "for(var j=0;j<list.length;j++)if(list[j][0]===lab){seen=true;break;}"
+                    + "if(seen)dups.push(all[i]);else list.push(all[i]);}"
+                    + "var sc=list[0][1];while(sc&&sc!==document.body){"
                     + "if(sc.scrollHeight>sc.clientHeight+50)break;sc=sc.parentElement;}"
                     + "if(!sc||sc===document.body)return 'noscroll';"
-                    + "var bg=getComputedStyle(sc).backgroundColor;"
+                    // El viewport del scroll es transparente; el color real
+                    // esta en un ancestro. Sin fondo la barra se solapa con
+                    // las ultimas sesiones y se leen las dos capas.
+                    + "function solid(c){if(!c||c==='transparent')return false;"
+                    + "var m=/^rgba?\\(([^)]+)\\)$/.exec(c);if(!m)return false;"
+                    + "var p=m[1].split(',');"
+                    + "return p.length<4||parseFloat(p[3])>=0.95;}"
+                    + "var bg='rgb(22,22,22)',bx=sc,panel=sc.parentElement||sc;"
+                    + "while(bx&&bx!==document.body){var b=getComputedStyle(bx).backgroundColor;"
+                    + "if(solid(b)){bg=b;panel=bx;break;}"
+                    + "bx=bx.parentElement;}"
+                    // La lista de sesiones es virtualizada y monta despues: si
+                    // la barra va dentro del scroll acaba entre las filas. Se
+                    // ancla al panel del sidebar, fuera del area que scrollea.
                     + "var bar=document.createElement('div');bar.id='oc-footbar';"
-                    + "bar.style.cssText='position:sticky;bottom:0;z-index:5;display:flex;gap:8px;"
-                    + "padding:10px 12px;background:'+bg+';';"
-                    + "rows.forEach(function(r){"
+                    + "bar.style.cssText='position:absolute;left:0;right:0;bottom:0;z-index:5;"
+                    + "display:flex;gap:8px;padding:10px 12px;background:'+bg+';';"
+                    + "for(var i=0;i<list.length;i++){var r=list[i][1];"
                     + "r.style.removeProperty('display');"
                     + "r.style.setProperty('flex','1','important');"
                     + "r.style.setProperty('justify-content','center','important');"
                     + "r.style.setProperty('color','#ffffff','important');"
-                    + "var all=r.querySelectorAll('*');"
-                    + "Array.prototype.forEach.call(all,function(x){var t=(x.textContent||'').trim();"
-                    + "if(labels.indexOf(t)>=0){x.style.setProperty('font-size','17px','important');"
-                    + "x.style.setProperty('font-weight','600','important');"
-                    + "x.style.setProperty('color','#ffffff','important');}});"
-                    + "bar.appendChild(r);});"
-                    + "sc.appendChild(bar);"
+                    + "var xs=r.querySelectorAll('*');"
+                    + "for(var j=0;j<xs.length;j++){var t=(xs[j].textContent||'').trim();"
+                    + "if(labels.indexOf(t)>=0){xs[j].style.setProperty('font-size','17px','important');"
+                    + "xs[j].style.setProperty('font-weight','600','important');"
+                    + "xs[j].style.setProperty('color','#ffffff','important');}}"
+                    + "bar.appendChild(r);}"
+                    + "if(getComputedStyle(panel).position==='static')"
+                    + "panel.style.setProperty('position','relative','important');"
+                    + "panel.appendChild(bar);"
                     + "try{var bh=bar.offsetHeight||64;"
                     + "sc.style.setProperty('padding-bottom',(bh+8)+'px','important');}"
                     + "catch(e2){}"
-                    + "hideDupes();"
-                    + "return rows.length+'barok';"
+                    + "hide(dups);"
+                    + "return list.length+'barok';"
                     + "}catch(err){return 'FERR';}})()",
                     v -> {
                         Log.d("OpenCode", "foot-fix: " + v);
                         // La lista hidrata tarde: reintentar acotado si aun no existe.
-                        if (v != null && (v.contains("none") || v.contains("FERR")) && footTries < 4) {
+                        if (v != null && (v.contains("none") || v.contains("FERR")) && footTries < 3) {
                             footTries++;
-                            new Handler(Looper.getMainLooper())
-                                    .postDelayed(() -> boostSidebarFooter(), 3000);
+                            progressHandler.postDelayed(this::boostSidebarFooter, 1200);
                         } else if (v != null && (v.contains("ok") || v.contains("done"))) {
                             footTries = 0;
                         }
@@ -1876,32 +2119,355 @@ public class MainActivity extends AppCompatActivity {
             Log.d("OpenCode", "foot-fix fallo: " + e.getMessage());
         }
     }
+
+    /** La barra muere con el sidebar en cada navegacion SPA: una sola pasada
+     *  acotada y con retardo, en vez de encadenar inyecciones completas. */
+    private final Runnable footbarTask = this::boostSidebarFooter;
+
+    private void scheduleFootbar() {
+        progressHandler.removeCallbacks(footbarTask);
+        progressHandler.postDelayed(footbarTask, 220);
+    }
+
     private String basicAuth() {
         String raw = "opencode:" + LocalRuntime.serverPassword(this);
         return "Basic " + Base64.getEncoder().encodeToString(
                 raw.getBytes(StandardCharsets.UTF_8));
     }
 
+    /**
+     * v2: la UI lee ?auth_token=<base64url(opencode:password)> al arrancar,
+     * guarda el servidor en localStorage y borra el parametro de la URL.
+     */
+    private String authToken() {
+        String raw = "opencode:" + LocalRuntime.serverPassword(this);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String withAuthToken(String url) {
+        try {
+            Uri u = Uri.parse(url);
+            String host = u.getHost();
+            if (!(HOST.equals(host) || "localhost".equalsIgnoreCase(host))) return url;
+            if (u.getQueryParameter("auth_token") != null) return url;
+            int hash = url.indexOf('#');
+            String base = hash >= 0 ? url.substring(0, hash) : url;
+            String frag = hash >= 0 ? url.substring(hash) : "";
+            return base + (base.contains("?") ? "&" : "?")
+                    + "auth_token=" + authToken() + frag;
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
+    private String earlyScript() {
+        if (earlyScriptCache != null) return earlyScriptCache;
+        try (InputStream in = getAssets().open("oc-early.js")) {
+            earlyScriptCache = readAll(in);
+        } catch (Exception e) {
+            log("oc-early.js no disponible: " + e);
+            earlyScriptCache = "";
+        }
+        return earlyScriptCache;
+    }
+
+    private static final class IndexDoc {
+        final String html;
+        final String csp;
+
+        IndexDoc(String html, String csp) {
+            this.html = html;
+            this.csp = csp;
+        }
+    }
+
+    /** Descarga el HTML del servidor local con la misma auth que el WebView. */
+    private IndexDoc fetchIndexDoc(String pathAndQuery) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(URL + pathAndQuery).openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(2500);
+            c.setReadTimeout(4000);
+            c.setUseCaches(false);
+            c.setRequestProperty("Authorization", basicAuth());
+            c.setRequestProperty("Accept", "text/html");
+            c.setRequestProperty("Accept-Encoding", "identity");
+            c.setRequestProperty("User-Agent", "opencode-android");
+            int code = c.getResponseCode();
+            if (code != 200) return null;
+            String type = c.getContentType();
+            if (type != null && !type.toLowerCase(Locale.ROOT).contains("text/html")) {
+                return null;
+            }
+            return new IndexDoc(readAll(c.getInputStream()),
+                    c.getHeaderField("Content-Security-Policy"));
+        } catch (Exception e) {
+            log("early html: " + e);
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    /**
+     * Filtra /api/fs/list y /api/fs/find para que el selector de proyectos no
+     * muestre carpetas internas del runtime (.cache, .config, bin, lib...).
+     * Tambien añade la carpeta de proyectos compartida, que el servidor no
+     * lista porque es un enlace simbolico.
+     */
+    private WebResourceResponse filterFsResponse(Uri u) {
+        HttpURLConnection c = null;
+        try {
+            String path = u.getPath();
+            if (!"/api/fs/list".equals(path) && !"/api/fs/find".equals(path)) return null;
+            String q = u.getEncodedQuery();
+            URL url = new URL(URL + path + (q == null ? "" : "?" + q));
+            c = (HttpURLConnection) url.openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(2500);
+            c.setReadTimeout(4000);
+            c.setUseCaches(false);
+            c.setRequestProperty("Authorization", basicAuth());
+            c.setRequestProperty("Accept", "application/json");
+            c.setRequestProperty("Accept-Encoding", "identity");
+            c.setRequestProperty("User-Agent", "opencode-android");
+            int code = c.getResponseCode();
+            if (code != 200) return null;
+            String type = c.getContentType();
+            if (type == null || !type.toLowerCase(Locale.ROOT).contains("application/json")) {
+                return null;
+            }
+            String body = readAll(c.getInputStream());
+            JSONObject obj = new JSONObject(body);
+            JSONArray data = obj.optJSONArray("data");
+            if (data == null) return null;
+
+            String home = canonicalPath(LocalRuntime.homeDir(this).getAbsolutePath());
+            boolean isFind = "/api/fs/find".equals(path);
+            String current = u.getQueryParameter("path");
+            if (current == null || current.isEmpty()) {
+                current = u.getQueryParameter("location[directory]");
+            }
+            current = canonicalPath(current);
+            if (current.isEmpty()) current = home;
+
+            JSONArray out = new JSONArray();
+            boolean changed = false;
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject e = data.optJSONObject(i);
+                if (e == null) {
+                    out.put(data.get(i));
+                    continue;
+                }
+                if (!"directory".equals(e.optString("type"))) {
+                    out.put(e);
+                    continue;
+                }
+                String p = e.optString("path", "");
+                String name = baseName(p);
+                boolean hide = name.startsWith(".");
+                if (!hide && isInternalDir(name)) {
+                    hide = isFind
+                            ? trimSlash(p).indexOf('/') < 0
+                            : current.equals(home);
+                }
+                if (hide) {
+                    changed = true;
+                    continue;
+                }
+                out.put(e);
+            }
+
+            if (!isFind && current.equals(home)
+                    && LocalRuntime.projectsDir(this).isDirectory()
+                    && new File(LocalRuntime.homeDir(this),
+                            LocalRuntime.PROJECTS_DIR_NAME).isDirectory()) {
+                boolean present = false;
+                for (int i = 0; i < out.length(); i++) {
+                    JSONObject e = out.optJSONObject(i);
+                    if (e != null && LocalRuntime.PROJECTS_DIR_NAME.equals(
+                            baseName(e.optString("path", "")))) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (!present) {
+                    JSONObject e = new JSONObject();
+                    e.put("path", LocalRuntime.PROJECTS_DIR_NAME + "/");
+                    e.put("type", "directory");
+                    out.put(e);
+                    changed = true;
+                }
+            }
+
+            if (!changed) return null;
+            obj.put("data", out);
+            // Sin cabecera Content-Type: WebView la duplicaria con el mimeType
+            // ("application/json, application/json") y el SDK de v2 rechaza
+            // esa respuesta. El mimeType del constructor ya la establece.
+            Map<String, String> h = new HashMap<>();
+            h.put("Cache-Control", "no-store");
+            return new WebResourceResponse("application/json", "utf-8", 200, "OK", h,
+                    new ByteArrayInputStream(obj.toString().getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            log("fs filter: " + e);
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private static String trimSlash(String p) {
+        if (p == null) return "";
+        String s = p;
+        while (s.length() > 1 && s.endsWith("/")) s = s.substring(0, s.length() - 1);
+        return s;
+    }
+
+    private static String canonicalPath(String p) {
+        String s = trimSlash(p);
+        if (s.startsWith("/data/user/0/")) {
+            s = "/data/data/" + s.substring("/data/user/0/".length());
+        }
+        return s;
+    }
+
+    private static String baseName(String p) {
+        String s = trimSlash(p);
+        int i = s.lastIndexOf('/');
+        return i >= 0 ? s.substring(i + 1) : s;
+    }
+
+    private static boolean isInternalDir(String name) {
+        return "bin".equals(name) || "lib".equals(name)
+                || "usr".equals(name) || "tmp".equals(name);
+    }
+
+    private String injectEarlyScript(String html) {
+        String tag = "<script src=\"/oc-early.js\"></script>";
+        int head = html.indexOf("<head>");
+        if (head >= 0) {
+            int at = head + "<head>".length();
+            return html.substring(0, at) + tag + html.substring(at);
+        }
+        return tag + html;
+    }
+
+    /** Respuesta HTML del servidor local sin cache y con la CSP original. */
+    private WebResourceResponse htmlResponse(String html, String csp) {
+        Map<String, String> h = new HashMap<>();
+        h.put("Cache-Control", "no-store");
+        if (csp != null && !csp.isEmpty()) {
+            h.put("Content-Security-Policy", csp);
+        }
+        return new WebResourceResponse("text/html", "utf-8",
+                200, "OK", h,
+                new ByteArrayInputStream(html.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /** Bloquea el pellizco desde el documento: la meta viewport manda aunque
+     *  el WebView ignore setSupportZoom(false). Se cambia antes de cargar. */
+    private String lockViewport(String html, String csp) {
+        StringBuilder meta = new StringBuilder();
+        if (csp != null && !csp.isEmpty()) {
+            meta.append("<meta http-equiv=\"Content-Security-Policy\" content=\"")
+                    .append(csp.replace("\"", "&quot;")).append("\">");
+        }
+        meta.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1,")
+                .append(" maximum-scale=1, user-scalable=no, viewport-fit=cover,")
+                .append(" interactive-widget=resizes-content\">");
+        String tag = meta.toString();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "<meta[^>]*name=[\"']viewport[\"'][^>]*>",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(html);
+        if (m.find()) {
+            return html.substring(0, m.start()) + tag + html.substring(m.end());
+        }
+        int head = html.indexOf("<head>");
+        if (head >= 0) {
+            int at = head + "<head>".length();
+            return html.substring(0, at) + tag + html.substring(at);
+        }
+        return tag + html;
+    }
+
     /** Carga con Basic auth para el servidor local (la UI v2 la exige). */
     private void webLoad(String url) {
+        String full = withAuthToken(url);
+        if (BuildConfig.V2) {
+            // v2 registra un service worker que cachea el HTML original. Si
+            // sirviera la pagina, el viewport bloqueado no llegaria nunca.
+            // Cargando el documento desde memoria con la URL base, el HTML
+            // es siempre el nuestro y la SPA conserva origen y rutas.
+            final int gen = ++webLoadGen;
+            new Thread(() -> {
+                Uri u = Uri.parse(full);
+                String path = u.getPath();
+                if (path == null || path.isEmpty()) path = "/";
+                String q = u.getEncodedQuery();
+                final IndexDoc doc = fetchIndexDoc(path + (q == null ? "" : "?" + q));
+                runOnUiThread(() -> {
+                    if (gen != webLoadGen || isFinishing()) return;
+                    if (doc != null) {
+                        web.loadDataWithBaseURL(full, lockViewport(doc.html, doc.csp),
+                                "text/html", "utf-8", null);
+                    } else {
+                        Map<String, String> headers = new HashMap<>();
+                        headers.put("Authorization", basicAuth());
+                        web.loadUrl(full, headers);
+                    }
+                });
+            }, "v2-doc").start();
+            return;
+        }
         Map<String, String> headers = new HashMap<>();
         headers.put("Authorization", basicAuth());
-        web.loadUrl(url, headers);
+        web.loadUrl(full, headers);
+    }
+
+    /** Si el service worker sirvio el HTML original (o la pagina se recargo
+     *  fuera de webLoad), vuelve a cargar el documento con el viewport
+     *  bloqueado. Dos intentos como maximo para no entrar en bucle. */
+    private int v2DocFixes = 0;
+
+    private void ensureV2Doc(String url) {
+        if (url == null || !url.startsWith(URL)) return;
+        web.evaluateJavascript(
+                "(function(){var m=document.querySelector('meta[name=viewport]');"
+                        + "return !!(m&&m.content&&m.content.indexOf('user-scalable=no')>=0);})()",
+                value -> {
+                    if ("true".equals(value)) {
+                        v2DocFixes = 0;
+                        return;
+                    }
+                    if (v2DocFixes >= 2) return;
+                    v2DocFixes++;
+                    webLoad(url);
+                });
     }
 
     /** Una sola carga de la URL (evita recargas dobles que se ven como saltos). */
     private synchronized void loadChatUrl() {
         if (!urlLoading && web.getUrl() == null) {
             urlLoading = true;
-            webLoad(URL);
+            webLoad(takeChatUrl());
         }
+    }
+
+    /**
+     * URL de entrada al chat. Si un aviso de agente dejo una sesion pendiente,
+     * se abre esa sesion una sola vez; despues se vuelve a la raiz.
+     */
+    private String takeChatUrl() {
+        String sid = pendingSessionId;
+        pendingSessionId = null;
+        return (sid == null || sid.isEmpty()) ? URL : shareSessionUrl(sid);
     }
 
     /** Generacion de la peticion de entrar: una nueva anula la espera anterior. */
     private int openGen = 0;
-    /** Dialogos que se reabren al refrescar: se cierran antes para no apilarse
-     *  (al Cerrar salian los viejos con los borrados). */
-    private androidx.appcompat.app.AlertDialog usageDlg;
     private androidx.appcompat.app.AlertDialog logDlg;
 
     /** Chat-first: al abrir la app, si el servidor ya responde, directo al chat sin toques.
@@ -2089,7 +2655,7 @@ public class MainActivity extends AppCompatActivity {
             }
             if (gen != openGen || isFinishing()) return;
             final boolean ready = waitForHttp(3000);
-            if (ready) applyAutoPermissions(autoPerm());
+            if (ready && !BuildConfig.V2 && !BuildConfig.V2_LAB) applyAutoPermissions(autoPerm());
             runOnUiThread(() -> {
                 setBusy(false);
                 if (gen != openGen) return;
@@ -2166,6 +2732,7 @@ public class MainActivity extends AppCompatActivity {
         setLangText(R.id.logTitle, T("Registro", "Log"));
         setLangText(R.id.txtLog, T("Listo. Pulsa Iniciar y abrir.", "Ready. Press Start and open."));
         setLangText(R.id.txtStatus, T("Servidor ?", "Server ?"));
+        setLangText(R.id.splashRetry, T("Reintentar", "Retry"));
         refreshUpdateBtn();
     }
     private void setLangText(int id, String s) {
@@ -2204,6 +2771,7 @@ public class MainActivity extends AppCompatActivity {
     /** Aviso de update: compara instalada vs ultima de GitHub (cache 24h).
      *  Con runtime empaquetado solo avisa: el binario va dentro del APK. */
     private void checkForUpdate(boolean verbose) {
+        if (BuildConfig.V2) return;
         final boolean local = LocalRuntime.available(this);
         final String activeVer = LocalRuntime.activeVersion(this);
         final String runtimeKey = local ? "local:" + activeVer : "termux";
@@ -2512,18 +3080,19 @@ public class MainActivity extends AppCompatActivity {
         menu.getMenu().add(0, 1, 1, T("Registro", "Log")).setIcon(android.R.drawable.ic_menu_info_details);
         menu.getMenu().add(0, 3, 3, T("Reiniciar servidor", "Restart server")).setIcon(android.R.drawable.ic_popup_sync);
         menu.getMenu().add(0, 4, 4, T("Detener servidor", "Stop server")).setIcon(android.R.drawable.ic_menu_close_clear_cancel);
-        if (updatePending && updateInstallable)
-            menu.getMenu().add(0, 5, 5, T("Actualizar opencode ", "Update opencode ")
-                    + updInstalled + " → " + updLatest).setIcon(android.R.drawable.ic_menu_upload);
-        if (appUpdatePending)
-            menu.getMenu().add(0, 10, 5, T("Nueva versión de la app ", "New app version ")
-                    + appUpdTag + T(" — Descargar", " — Download"))
-                    .setIcon(android.R.drawable.stat_sys_download);
-        else
-            menu.getMenu().add(0, 11, 5, T("Buscar actualización de la app", "Check app update"))
-                    .setIcon(android.R.drawable.ic_popup_sync);
+        if (!BuildConfig.V2_LAB) {
+            if (updatePending && updateInstallable)
+                menu.getMenu().add(0, 5, 5, T("Actualizar opencode ", "Update opencode ")
+                        + updInstalled + " → " + updLatest).setIcon(android.R.drawable.ic_menu_upload);
+            if (appUpdatePending)
+                menu.getMenu().add(0, 10, 5, T("Nueva versión de la app ", "New app version ")
+                        + appUpdTag + T(" — Descargar", " — Download"))
+                        .setIcon(android.R.drawable.stat_sys_download);
+            else
+                menu.getMenu().add(0, 11, 5, T("Buscar actualización de la app", "Check app update"))
+                        .setIcon(android.R.drawable.ic_popup_sync);
+        }
         menu.getMenu().add(0, 7, 7, T("Opciones", "Options")).setIcon(android.R.drawable.ic_menu_preferences);
-        menu.getMenu().add(0, 8, 8, T("Consumo", "Usage")).setIcon(android.R.drawable.ic_menu_info_details);
         menu.getMenu().add(0, 9, 9, T("Reportar problema", "Report problem")).setIcon(android.R.drawable.ic_menu_send);
         menu.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
@@ -2557,10 +3126,6 @@ public class MainActivity extends AppCompatActivity {
             }
             if (id == 7) {
                 showOptionsDialog();
-                return true;
-            }
-            if (id == 8) {
-                showUsageDialog();
                 return true;
             }
             if (id == 9) {
@@ -2792,35 +3357,38 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 appVer = "?";
             }
-            String lang = p.getString("lang",
-                    java.util.Locale.getDefault().getLanguage());
+            String lang = p.getString("lang", "auto");
+            if (lang == null || lang.isEmpty() || "auto".equals(lang)) {
+                lang = java.util.Locale.getDefault().getLanguage();
+            }
             StringBuilder b = new StringBuilder();
             b.append("### App\n");
             b.append("- App: ").append(appVer).append("\n");
             b.append("- Android: ").append(Build.VERSION.RELEASE)
                     .append(" (SDK ").append(Build.VERSION.SDK_INT).append("), ")
                     .append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append("\n");
-            b.append("- Servidor: ").append(serverOpen ? "abierto" : "cerrado").append("\n");
-            b.append("- opencode instalada: ").append(installed)
-                    .append(" (última conocida: ").append(latest).append(")\n");
-            b.append("### Opciones\n");
-            b.append("- Arranque: ").append(ServerWatch.bootOn(this) ? "SÍ" : "NO")
-                    .append(", Vigía: ").append(ServerWatch.wdMode(this))
-                    .append(", Intervalo: ").append(ServerWatch.wdMin(this)).append(" min\n");
-            b.append("- Bloqueo: ").append(lockOn() ? "SÍ" : "NO")
-                    .append(", Permisos auto: ").append(autoPerm() ? "SÍ" : "NO")
-                    .append(", Idioma: ").append(lang).append("\n");
-            b.append("### Qué pasa (edítalo antes de enviar)\n");
-            b.append("<describe aquí qué falla>\n");
+            b.append("- Server: ").append(serverOpen ? "running" : "stopped").append("\n");
+            b.append("- opencode installed: ").append(installed)
+                    .append(" (latest known: ").append(latest).append(")\n");
+            b.append("### Options\n");
+            b.append("- Boot start: ").append(ServerWatch.bootOn(this) ? "ON" : "OFF")
+                    .append(", watchdog: ").append(ServerWatch.wdMode(this))
+                    .append(", interval: ").append(ServerWatch.wdMin(this)).append(" min\n");
+            b.append("- App lock: ").append(lockOn() ? "ON" : "OFF");
+            // v2 gestiona los permisos en su propia UI: el interruptor v1 no aplica.
+            if (!BuildConfig.V2) b.append(", auto permissions: ").append(autoPerm() ? "ON" : "OFF");
+            b.append(", language: ").append(lang).append("\n");
+            b.append("### What happens (edit before sending)\n");
+            b.append("<describe what fails here>\n");
             String rawLog = "";
             try {
                 rawLog = txtLog.getText().toString();
             } catch (Exception ignored) {
             }
             String log = redactSecrets(rawLog);
-            if (log.length() > 3000) log = "…(recortado)…\n" + log.substring(log.length() - 3000);
-            b.append("### Registro (claves tapadas)\n```\n").append(log).append("\n```\n");
-            final String title = "Reporte app v" + appVer;
+            if (log.length() > 3000) log = "…(trimmed)…\n" + log.substring(log.length() - 3000);
+            b.append("### Log (secrets redacted)\n```\n").append(log).append("\n```\n");
+            final String title = "App report v" + appVer;
             final String body = b.toString();
             runOnUiThread(() -> {
                 try {
@@ -2832,7 +3400,7 @@ public class MainActivity extends AppCompatActivity {
                     try {
                         ClipboardManager cm = (ClipboardManager)
                                 getSystemService(Context.CLIPBOARD_SERVICE);
-                        cm.setPrimaryClip(ClipData.newPlainText("opencode-reporte",
+                        cm.setPrimaryClip(ClipData.newPlainText("opencode-report",
                                 title + "\n\n" + body));
                         snack(T("Sin navegador: reporte copiado, pégalo donde quieras",
                                 "No browser: report copied, paste it anywhere"));
@@ -2872,205 +3440,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
     /** Punto rojo (falta) / verde (hecho). Solo estado: sin botones. */
-    /** Consumo de cuota: lee las sesiones de la API local (no depende del widget
-     *  de la web, que en anonimo se queda girando). Muestra tokens, coste y fecha;
-     *  permite borrar con confirmacion. */
-    private void showUsageDialog() {
-        snack(T("Leyendo consumo…", "Reading usage…"));
-        new Thread(() -> {
-            String body;
-            try {
-                java.net.URL u = new java.net.URL(URL + "/session");
-                java.net.HttpURLConnection c = (java.net.HttpURLConnection) u.openConnection();
-                c.setConnectTimeout(5000);
-                c.setReadTimeout(8000);
-                java.util.Scanner sc = new java.util.Scanner(c.getInputStream(), "UTF-8")
-                        .useDelimiter("\\A");
-                body = sc.hasNext() ? sc.next() : "[]";
-                sc.close();
-            } catch (Exception e) {
-                final String err = String.valueOf(e.getMessage());
-                runOnUiThread(() -> snack(T("Sin servidor: arráncalo primero", "No server: start it first")
-                        + " (" + err + ")"));
-                return;
-            }
-            final String b = body;
-            runOnUiThread(() -> showUsageList(b));
-        }).start();
-    }
-
-    private String fmtTok(long n) {
-        try {
-            return String.format(java.util.Locale.getDefault(), "%,d", n);
-        } catch (Exception e) {
-            return String.valueOf(n);
-        }
-    }
-
-    private String fmtCost(double c) {
-        try {
-            return String.format(java.util.Locale.US, "$%.2f", c);
-        } catch (Exception e) {
-            return "$?";
-        }
-    }
-
-    private String fmtDate(long ms) {
-        try {
-            return new java.text.SimpleDateFormat("dd/MM HH:mm",
-                    java.util.Locale.getDefault()).format(new java.util.Date(ms));
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
-    private void showUsageList(String body) {
-        if (usageDlg != null) {
-            try {
-                usageDlg.dismiss();
-            } catch (Exception ignored) {
-            }
-            usageDlg = null;
-        }
-        org.json.JSONArray arr;
-        try {
-            arr = new org.json.JSONArray(body);
-        } catch (Exception e) {
-            snack(T("Respuesta rara del servidor", "Odd server answer"));
-            return;
-        }
-        java.util.ArrayList<org.json.JSONObject> rows = new java.util.ArrayList<>();
-        for (int i = 0; i < arr.length(); i++) {
-            org.json.JSONObject o = arr.optJSONObject(i);
-            if (o != null) rows.add(o);
-        }
-        java.util.Collections.sort(rows, (a, b) -> Long.compare(usageTokens(b), usageTokens(a)));
-        long tIn = 0, tOut = 0, tRe = 0;
-        double tCost = 0;
-        for (org.json.JSONObject o : rows) {
-            org.json.JSONObject tk = o.optJSONObject("tokens");
-            if (tk != null) {
-                tIn += tk.optLong("input", 0);
-                tOut += tk.optLong("output", 0);
-                tRe += tk.optLong("reasoning", 0);
-            }
-            tCost += o.optDouble("cost", 0);
-        }
-        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
-        root.setOrientation(android.widget.LinearLayout.VERTICAL);
-        int p = dp(16);
-        root.setPadding(p, p, p, p);
-        TextView total = new TextView(this);
-        total.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        total.setTextSize(15);
-        total.setText(T("Total: ", "Total: ") + fmtTok(tIn + tOut + tRe)
-                + T(" tokens · ", " tokens · ") + fmtCost(tCost));
-        root.addView(total);
-        TextView sub = new TextView(this);
-        sub.setTextSize(12);
-        sub.setText(T("Entrada ", "In ") + fmtTok(tIn) + T(" · salida ", " · out ")
-                + fmtTok(tOut) + T(" · razonamiento ", " · reasoning ") + fmtTok(tRe));
-        root.addView(sub);
-        View sep = new View(this);
-        sep.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(12)));
-        root.addView(sep);
-        if (rows.isEmpty()) {
-            TextView none = new TextView(this);
-            none.setText(T("Sin sesiones.", "No sessions."));
-            root.addView(none);
-        }
-        for (org.json.JSONObject o : rows) {
-            final String sid = o.optString("id", "");
-            String title = o.optString("title", T("Sin título", "Untitled"));
-            org.json.JSONObject tk = o.optJSONObject("tokens");
-            long tin = tk == null ? 0 : tk.optLong("input", 0);
-            long tou = tk == null ? 0 : tk.optLong("output", 0);
-            long tre = tk == null ? 0 : tk.optLong("reasoning", 0);
-            double cost = o.optDouble("cost", 0);
-            long upd = 0;
-            org.json.JSONObject tm = o.optJSONObject("time");
-            if (tm != null) upd = tm.optLong("updated", tm.optLong("created", 0));
-            android.widget.LinearLayout row = new android.widget.LinearLayout(this);
-            row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-            TextView tt = new TextView(this);
-            tt.setTextSize(14);
-            tt.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-            tt.setMaxLines(1);
-            tt.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            tt.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
-            tt.setText(title);
-            TextView ts = new TextView(this);
-            ts.setTextSize(12);
-            ts.setText(fmtTok(tin + tou + tre) + T(" tokens · ", " tokens · ")
-                    + fmtCost(cost) + (upd > 0 ? " · " + fmtDate(upd) : ""));
-            android.widget.LinearLayout col = new android.widget.LinearLayout(this);
-            col.setOrientation(android.widget.LinearLayout.VERTICAL);
-            col.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
-                    0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            col.addView(tt);
-            col.addView(ts);
-            row.addView(col);
-            com.google.android.material.button.MaterialButton del =
-                    new com.google.android.material.button.MaterialButton(this);
-            del.setText(T("Borrar", "Delete"));
-            final String ftitle = title;
-            del.setOnClickListener(v -> confirmDeleteSession(sid, ftitle));
-            row.addView(del);
-            root.addView(row);
-            View s2 = new View(this);
-            s2.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(8)));
-            root.addView(s2);
-        }
-        android.widget.ScrollView sv = new android.widget.ScrollView(this);
-        sv.setLayoutParams(new android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, dp(420)));
-        sv.addView(root);
-        usageDlg = new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-                .setTitle(T("Consumo", "Usage"))
-                .setView(sv)
-                .setNegativeButton(T("Cerrar", "Close"), null)
-                .show();
-    }
-
-    private long usageTokens(org.json.JSONObject o) {
-        org.json.JSONObject tk = o.optJSONObject("tokens");
-        if (tk == null) return 0;
-        return tk.optLong("input", 0) + tk.optLong("output", 0) + tk.optLong("reasoning", 0);
-    }
-
-    private void confirmDeleteSession(String sid, String title) {
-        if (sid == null || sid.isEmpty()) return;
-        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-                .setTitle(T("Borrar chat", "Delete chat"))
-                .setMessage(T("¿Borrar del servidor «" + title + "»? No se puede deshacer.",
-                        "Delete «" + title + "» from the server? Cannot be undone."))
-                .setPositiveButton(T("Borrar", "Delete"), (d, w) -> deleteSession(sid))
-                .setNegativeButton(T("Cancelar", "Cancel"), null)
-                .show();
-    }
-
-    private void deleteSession(String sid) {
-        snack(T("Borrando…", "Deleting…"));
-        new Thread(() -> {
-            try {
-                java.net.URL u = new java.net.URL(URL + "/session/" + sid);
-                java.net.HttpURLConnection c = (java.net.HttpURLConnection) u.openConnection();
-                c.setRequestMethod("DELETE");
-                c.setConnectTimeout(5000);
-                c.setReadTimeout(8000);
-                int code = c.getResponseCode();
-                if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
-                runOnUiThread(() -> showUsageDialog());
-            } catch (Exception e) {
-                runOnUiThread(() -> snack(T("No se pudo borrar", "Could not delete")
-                        + " (" + String.valueOf(e.getMessage()) + ")"));
-            }
-        }).start();
-    }
 
     /** El registro en un dialogo (copiar / limpiar / cerrar) sin salir del chat. */
     private void showLogDialog() {
@@ -3278,6 +3647,7 @@ private void refreshUpdateBtn() {
     /** Chequeo del launcher: pinta la cache al instante y refresca contra
      *  GitHub en cada entrada (minimo 60 s entre intentos por la API). */
     private void checkLauncherUpdate(boolean verbose) {
+        if (BuildConfig.V2_LAB) return;
         android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
         String cTag = p.getString("appupd_tag", "");
         String cUrl = p.getString("appupd_url", "");
@@ -3441,6 +3811,7 @@ private void refreshAppUpdateBtn() {
 
     private void setFullscreen(boolean full) {
         fullscreen = full;
+        uiFullscreen = full;
         int vis = full ? View.GONE : View.VISIBLE;
         findViewById(R.id.appBar).setVisibility(vis);
         findViewById(R.id.toolbar).setVisibility(vis);
@@ -3462,15 +3833,13 @@ private void refreshAppUpdateBtn() {
             restoreFabPos();
             if (web.getUrl() != null) {
                 injectEdgeCss();
-                flattenViewportFrame();
-                boostSidebarFooter();
-                redirectHelpToIssues();
-                rebrandDesktopToMobile();
-                shimAutoAccept();
-                hideShortcutsSettings();
-            shimUsageTap();
+                scheduleFootbar();
             }
-            snack(T("Pantalla completa: el boton abre el menu", "Fullscreen: the button opens the menu"));
+            // En el arranque el splash sigue visible: no se tapa con el aviso.
+            if (splashDone) {
+                snack(T("Pantalla completa: el boton abre el menu",
+                        "Fullscreen: the button opens the menu"));
+            }
         }
     }
 
@@ -3488,11 +3857,17 @@ private void refreshAppUpdateBtn() {
         lp.rightMargin = 0;
         lp.bottomMargin = 0;
         cardWeb.setLayoutParams(lp);
-        int p = full ? 0 : dp(16);
-        boxContent.setPadding(p, p, p, p);
+        chatPad = full ? 0 : dp(16);
+        applyChatPadding();
         // Siempre inmersivo (panel y chat): entrar/salir del chat no debe
         // redimensionar la ventana nunca. Barra de estado con swipe.
         enterImmersive();
+    }
+
+    /** Padding del contenido + alto del teclado (el hueco queda bajo el IME). */
+    private void applyChatPadding() {
+        if (boxContent == null) return;
+        boxContent.setPadding(chatPad, chatPad, chatPad, chatPad + imeBottom);
     }
 
     /** La pagina de opencode trae su propio marco (margen/borde). Lo aplanamos con CSS. */
@@ -3599,28 +3974,39 @@ private void refreshAppUpdateBtn() {
         try {
             web.evaluateJavascript(
                     "(function(){try{"
-                    + "var vw=window.innerWidth,vh=window.innerHeight,n=0,who=[];"
-                    + "Array.prototype.forEach.call(document.querySelectorAll('*'),function(e){"
-                    + "var r=e.getBoundingClientRect();"
+                    + "var vw=window.innerWidth,vh=window.innerHeight;"
+                    // Solo la carcasa (hasta 5 niveles): recorrer todo el DOM
+                    // y escribir estilos intercalados fuerza reflujo por nodo.
+                    + "var root=document.getElementById('root')||document.body;"
+                    + "var list=[document.body,root],level=[root];"
+                    + "for(var d=0;d<5&&list.length<400;d++){var next=[];"
+                    + "for(var i=0;i<level.length&&list.length<400;i++){"
+                    + "var kids=level[i].children;"
+                    + "for(var j=0;j<kids.length&&list.length<400;j++){"
+                    + "next.push(kids[j]);list.push(kids[j]);}}"
+                    + "level=next;if(!level.length)break;}"
+                    + "var todo=[];"
+                    + "for(var i=0;i<list.length;i++){var e=list[i],r=e.getBoundingClientRect();"
                     + "var full=(r.width>=vw-8&&r.height>=vh-8&&r.left<=8&&r.top<=8);"
                     + "var big=(r.width>=vw*0.8&&r.height>=vh*0.4);"
-                    + "if(!(full||big))return;"
-                    + "var cs=getComputedStyle(e);var t=false;"
-                    + "if((cs.borderWidth!=='0px'&&cs.borderStyle!=='none')"
-                    + "||cs.boxShadow!=='none'||cs.outlineStyle!=='none'){"
-                    + "e.style.setProperty('border','0','important');"
-                    + "e.style.setProperty('box-shadow','none','important');"
-                    + "e.style.setProperty('outline','none','important');t=true;}"
+                    + "if(!(full||big))continue;"
+                    + "var cs=getComputedStyle(e);"
+                    + "var bs=((cs.borderWidth!=='0px'&&cs.borderStyle!=='none')"
+                    + "||cs.boxShadow!=='none'||cs.outlineStyle!=='none');"
                     + "var fl=cs.filter||'';"
-                    + "if(fl&&fl!=='none'&&fl.indexOf('drop-shadow')>=0){"
-                    + "e.style.setProperty('filter','none','important');"
-                    + "e.style.setProperty('-webkit-filter','none','important');t=true;}"
+                    + "var fi=(fl&&fl!=='none'&&fl.indexOf('drop-shadow')>=0);"
                     + "var bi=cs.backgroundImage||'';"
-                    + "if(bi&&bi!=='none'){"
-                    + "e.style.setProperty('background-image','none','important');t=true;}"
-                    + "if(t){n++;if(who.length<6)who.push(e.tagName+'.'+String(e.className).split(' ')[0]"
-                    + "+'@'+Math.round(r.width)+'x'+Math.round(r.height));}});"
-                    + "return n+'|'+who.join(',');}catch(err){return -1;}})()",
+                    + "var im=(bi&&bi!=='none');"
+                    + "if(bs||fi||im)todo.push([e,bs,fi,im,r.width,r.height]);}"
+                    // Lecturas terminadas: ahora se aplican los cambios de golpe.
+                    + "for(var k=0;k<todo.length;k++){var e=todo[k][0];"
+                    + "if(todo[k][1]){e.style.setProperty('border','0','important');"
+                    + "e.style.setProperty('box-shadow','none','important');"
+                    + "e.style.setProperty('outline','none','important');}"
+                    + "if(todo[k][2]){e.style.setProperty('filter','none','important');"
+                    + "e.style.setProperty('-webkit-filter','none','important');}"
+                    + "if(todo[k][3])e.style.setProperty('background-image','none','important');}"
+                    + "return todo.length+'|';}catch(err){return -1;}})()",
                     v -> { if (v != null && !v.equals("\"0|\"")) Log.d("OpenCode", "edge-fix: " + v); });
         } catch (Exception e) {
             Log.d("OpenCode", "edge-fix fallo: " + e.getMessage());
@@ -3633,21 +4019,22 @@ private void refreshAppUpdateBtn() {
         try {
             web.evaluateJavascript(
                     "(function(){try{"
-                    + "var n=0;"
-                    + "function walk(e){"
-                    + "if(e.nodeType===3){var t=e.nodeValue;"
-                    + "if(t&&t.indexOf('OpenCode Desktop')>=0){"
-                    + "e.nodeValue=t.split('OpenCode Desktop').join('OpenCode Mobile');n++;}}"
-                    + "else if(e.nodeType===1){"
-                    + "if(e.tagName==='SCRIPT'||e.tagName==='STYLE')return;"
-                    + "var c=e.childNodes;for(var i=0;i<c.length;i++)walk(c[i]);"
-                    + "if(e.childNodes.length===1&&e.childNodes[0].nodeType===3"
-                    + "&&e.childNodes[0].nodeValue.trim()==='Desktop'){"
-                    + "e.childNodes[0].nodeValue='Mobile';n++;}}}"
-                    + "walk(document.body);"
+                    // TreeWalker de textos: no concatena subarboles ni recorre
+                    // elementos, y el observador se agrupa para no repetirlo
+                    // en cada mutacion del streaming.
+                    + "function fix(){var n=0,w=document.createTreeWalker("
+                    + "document.body,NodeFilter.SHOW_TEXT,null),t;"
+                    + "while(t=w.nextNode()){var v=t.nodeValue;if(!v)continue;"
+                    + "if(v.indexOf('OpenCode Desktop')>=0){"
+                    + "t.nodeValue=v.split('OpenCode Desktop').join('OpenCode Mobile');n++;}"
+                    + "else if(v.trim()==='Desktop'){t.nodeValue='Mobile';n++;}}"
+                    + "return n;}"
+                    + "var n=fix();"
                     + "if(!window.__ocBrandObs&&window.MutationObserver){"
-                    + "window.__ocBrandObs=new MutationObserver(function(m){"
-                    + "for(var i=0;i<m.length;i++)if(m[i].type==='childList'){walk(document.body);break;}});"
+                    + "window.__ocBrandObs=new MutationObserver(function(){"
+                    + "if(window.__ocBrandT)return;"
+                    + "window.__ocBrandT=setTimeout(function(){"
+                    + "window.__ocBrandT=null;fix();},350);});"
                     + "window.__ocBrandObs.observe(document.body,{childList:true,subtree:true});}"
                     + "return 'brand:'+n;}catch(err){return 'brand-ERR:'+err;}})()",
                     v -> Log.d("OpenCode", "brand-fix: " + v));
@@ -3694,7 +4081,9 @@ private void refreshAppUpdateBtn() {
                     + "var was=on();paint(sw,!was);"
                     + "try{ocConfig.toggleAutoAccept();}catch(e){paint(sw,was);}"
                     + "},true);"
-                    + "if(window.MutationObserver)new MutationObserver(apply)"
+                    + "var t=null;"
+                    + "if(window.MutationObserver)new MutationObserver(function(){"
+                    + "if(t)return;t=setTimeout(function(){t=null;apply();},250);})"
                     + ".observe(document.body,{childList:true,subtree:true});"
                     + "apply();setTimeout(apply,400);return 'auto-shim';}catch(e){return 'ERR:'+e;}})()",
                     v -> Log.d("OpenCode", "auto-shim: " + v));
@@ -3709,33 +4098,35 @@ private void refreshAppUpdateBtn() {
                     "(function(){try{"
                     + "if(window.__ocHideShortcuts)return 'ya';"
                     + "window.__ocHideShortcuts=true;"
-                    + "function hide(){var n=0,now=Date.now();"
-                    + "var all=document.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper]');"
-                    + "var s0=document.querySelectorAll('[data-variant=settings] [data-slot=tabs-v2-trigger-wrapper]');"
-                    + "if(!window.__ocHideTick||now-window.__ocHideTick>4000){window.__ocHideTick=now;"
-                    + "var vs=[];for(var q=0;q<all.length;q++)vs.push((all[q].getAttribute('data-value')||'-')+'='+(all[q].textContent||'').trim());"
-                    + "try{ocConfig.debug('tick all='+all.length+' set='+s0.length+' '+vs.join('|'));}catch(e){}}"
-                    + "var ws=document.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper][data-value=shortcuts]');"
+                    // Solo actua si hay ajustes/dialogo abierto: en el chat no
+                    // cuesta nada y ya no queda un interval de 600 ms eterno.
+                    + "function hide(){"
+                    + "var root=document.querySelector('[data-variant=settings]')"
+                    + "||document.querySelector('[role=dialog]');"
+                    + "if(!root)return 0;"
+                    + "var n=0;"
+                    + "var ws=root.querySelectorAll('[data-slot=tabs-v2-trigger-wrapper][data-value=shortcuts]');"
                     + "for(var i=0;i<ws.length;i++){"
                     + "ws[i].style.display='none';ws[i].setAttribute('aria-hidden','true');n++;}"
-                    + "var cs=document.querySelectorAll('[data-slot=tabs-v2-content]');"
+                    + "var cs=root.querySelectorAll('[data-slot=tabs-v2-content]');"
                     + "for(var j=0;j<cs.length;j++){var h=cs[j].querySelector('h2');"
                     + "var x=(h?h.textContent:cs[j].textContent)||'';"
                     + "if(/keyboard shortcuts|atajos de teclado/i.test(x)){"
                     + "cs[j].style.display='none';n++;}}"
-                    + "if(n===0&&(!window.__ocTxtT||now-window.__ocTxtT>2000)){window.__ocTxtT=now;"
-                    + "var dlg=document.querySelector('[role=dialog]')||document.body;"
-                    + "var tn=dlg.getElementsByTagName('*');"
+                    + "if(n===0){var tn=root.getElementsByTagName('*');"
                     + "for(var m=0;m<tn.length;m++){var el=tn[m];"
                     + "if(el.children.length===0){var tx=(el.textContent||'').trim();"
                     + "if(tx==='Shortcuts'||tx==='Atajos'||tx==='Atajos de teclado'){"
                     + "var w=el.closest('[data-slot=tabs-v2-trigger-wrapper]')||el.closest('[data-value]');"
                     + "if(w){w.style.display='none';w.setAttribute('aria-hidden','true');n++;}}}}}"
-                    + "if(n>0){try{ocConfig.debug('hide '+n+' all='+all.length+' set='+s0.length);}catch(e){}}"
                     + "return n;}"
-                    + "if(window.__ocHideTimer)clearInterval(window.__ocHideTimer);"
-                    + "window.__ocHideTimer=setInterval(hide,600);"
-                    + "var r=hide();return 'shortcuts:'+r;}catch(e){return 'ERR:'+e;}})()",
+                    + "function schedule(){if(window.__ocHideT)return;"
+                    + "window.__ocHideT=setTimeout(function(){"
+                    + "window.__ocHideT=null;hide();},300);}"
+                    + "if(window.MutationObserver)new MutationObserver(schedule)"
+                    + ".observe(document.body,{childList:true,subtree:true});"
+                    + "var r=hide();setTimeout(hide,700);setTimeout(hide,2200);"
+                    + "return 'shortcuts:'+r;}catch(e){return 'ERR:'+e;}})()",
                     v -> Log.d("OpenCode", "shortcuts-hide: " + v));
         } catch (Exception e) {
             Log.d("OpenCode", "shortcuts-hide fallo: " + e.getMessage());
@@ -3791,7 +4182,10 @@ private void refreshAppUpdateBtn() {
                     + "return n;}"
                     + "var c=fix();"
                     + "if(!window.__ocHelpObs&&window.MutationObserver){"
-                    + "window.__ocHelpObs=new MutationObserver(function(){fix();});"
+                    + "window.__ocHelpObs=new MutationObserver(function(){"
+                    + "if(window.__ocHelpT)return;"
+                    + "window.__ocHelpT=setTimeout(function(){"
+                    + "window.__ocHelpT=null;fix();},250);});"
                     + "window.__ocHelpObs.observe(document.documentElement,"
                     + "{childList:true,subtree:true,attributes:true,attributeFilter:['href']});}"
                     + "if(window.__ocHelpClk)document.removeEventListener('click',window.__ocHelpClk,true);"

@@ -575,6 +575,29 @@ public final class LocalToolbox {
      * avisos, vibracion, brillo, volumen, red, sensores). Cada script llama a la
      * app por HTTP; la app hace la accion con sus permisos.
      */
+    /**
+     * Preambulo para que los scripts nativos usen el curl del prefijo con el
+     * linker del sistema: Android no permite execve directo en files/.
+     */
+    private static String nativeCurlPrelude(Context ctx, File pref) {
+        String prefix = pref.getAbsolutePath();
+        String home = new File(ctx.getFilesDir(), "home").getAbsolutePath();
+        String nd = ctx.getApplicationInfo().nativeLibraryDir;
+        // Dentro de proot el prefijo esta montado en su ruta de Termux y el
+        // curl funciona directo. En el shell nativo hay que lanzarlo con el
+        // linker del sistema (Android bloquea execve en files/).
+        return "if [ -x /data/data/com.termux/files/usr/bin/curl ]; then\n"
+                + "  CURL=/data/data/com.termux/files/usr/bin/curl\n"
+                + "  oc_curl() { \"$CURL\" \"$@\"; }\n"
+                + "else\n"
+                + "  CURL='" + prefix + "/bin/curl'\n"
+                + "  OC_LIBS='" + prefix + "/lib:" + home + "/lib:" + nd + "'\n"
+                + "  OC_CA='" + prefix + "/etc/tls/cert.pem'\n"
+                + "  oc_curl() { LD_LIBRARY_PATH=\"$OC_LIBS\" CURL_CA_BUNDLE=\"$OC_CA\" "
+                + "SSL_CERT_FILE=\"$OC_CA\" /system/bin/linker64 \"$CURL\" \"$@\"; }\n"
+                + "fi\n";
+    }
+
     private static void writeDeviceScripts(Context ctx, File pref) {
         File bin = new File(pref, "bin");
         if (!bin.isDirectory() && !bin.mkdirs()) return;
@@ -582,7 +605,8 @@ public final class LocalToolbox {
         if (!libexec.isDirectory() && !libexec.mkdirs()) return;
 
         File client = new File(libexec, "opencode-api");
-        String clientBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
+        String clientBody = "#!/system/bin/sh\n"
+                + nativeCurlPrelude(ctx, pref)
                 + "# Cliente de la API del dispositivo de OpenCode (mismo uso que\n"
                 + "# el termux-api de Termux, pero contra esta app).\n"
                 + "EP=$1; shift\n"
@@ -595,7 +619,7 @@ public final class LocalToolbox {
                 + "  A=\"$1\"; shift; i=$((i+1))\n"
                 + "  set -- \"$@\" -H \"X-OpenCode-Arg-$i: $A\"\n"
                 + "done\n"
-                + "exec /data/data/com.termux/files/usr/bin/curl -s -X POST \\\n"
+                + "oc_curl -s -X POST \\\n"
                 + "  -H \"X-OpenCode-Token: $TOK\" \"$@\" \\\n"
                 + "  \"http://127.0.0.1:$PORT/device/$EP\"\n";
         writeScript(client, clientBody);
@@ -614,19 +638,21 @@ public final class LocalToolbox {
         };
         for (String[] c : cmds) {
             File f = new File(bin, c[0]);
-            String body = "#!/data/data/com.termux/files/usr/bin/sh\n"
-                    + "exec /data/data/com.termux/files/usr/libexec/opencode-api " + c[1]
+            String body = "#!/system/bin/sh\n"
+                    + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
+                    + "exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" " + c[1]
                     + " \"$@\"\n";
             writeScript(f, body);
         }
 
         // Comandos con root: el agente los manda por HTTP y la app usa su.
         File root = new File(bin, "opencode-root");
-        String rootBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
+        String rootBody = "#!/system/bin/sh\n"
+                + nativeCurlPrelude(ctx, pref)
                 + "# Ejecuta un comando como root (la app pide el permiso de su).\n"
                 + "PORT=${OPENCODE_TOOLBOX_PORT:-" + ToolboxServer.PORT + "}\n"
                 + "TOK=$OPENCODE_TOOLBOX_TOKEN\n"
-                + "exec /data/data/com.termux/files/usr/bin/curl -s -X POST \\\n"
+                + "oc_curl -s -X POST \\\n"
                 + "  -H \"X-OpenCode-Token: $TOK\" --data-urlencode \"cmd=$*\" \\\n"
                 + "  \"http://127.0.0.1:$PORT/root\"\n";
         writeScript(root, rootBody);
@@ -638,7 +664,8 @@ public final class LocalToolbox {
             java.nio.file.Files.deleteIfExists(su.toPath());
         } catch (Exception ignored) {
         }
-        String suBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
+        String suBody = "#!/system/bin/sh\n"
+                + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
                 + "# su del sandbox: usa el su real de la app (Magisk).\n"
                 + "while [ $# -gt 0 ]; do\n"
                 + "  case \"$1\" in\n"
@@ -651,7 +678,7 @@ public final class LocalToolbox {
                 + "done\n"
                 + "CMD=\"\"\n"
                 + "for a in \"$@\"; do CMD=\"$CMD$a \"; done\n"
-                + "exec /data/data/com.termux/files/usr/bin/opencode-root $CMD\n";
+                + "exec /system/bin/sh \"$OC_PREFIX/bin/opencode-root\" $CMD\n";
         writeScript(su, suBody);
 
         // Binarios de Android que cargan librerias del sistema: el
@@ -667,30 +694,31 @@ public final class LocalToolbox {
             File f = new File(bin, c);
             if (f.exists()) continue;
             if (!new File("/system/bin", c).exists()) continue;
-            String body = "#!/data/data/com.termux/files/usr/bin/sh\n"
+            String body = "#!/system/bin/sh\n"
                     + "unset LD_LIBRARY_PATH LD_PRELOAD\n"
                     + "PATH=/system/bin exec /system/bin/" + c + " \"$@\"\n";
             writeScript(f, body);
         }
 
         // sudo no existe en Android; se manda al mismo su de la app.
+        // Se reescribe siempre: los envoltorios viejos tenian un shebang de
+        // Termux que no existe en el shell nativo.
         File sudo = new File(bin, "sudo");
-        if (!sudo.exists()) {
-            String sudoBody = "#!/data/data/com.termux/files/usr/bin/sh\n"
-                    + "# sudo del sandbox: usa el su real de la app (Magisk).\n"
-                    + "while [ $# -gt 0 ]; do\n"
-                    + "  case \"$1\" in\n"
-                    + "    -E|-H|-n|-S) shift ;;\n"
-                    + "    -u) shift; [ $# -gt 0 ] && shift ;;\n"
-                    + "    -*) shift ;;\n"
-                    + "    *) break ;;\n"
-                    + "  esac\n"
-                    + "done\n"
-                    + "CMD=\"\"\n"
-                    + "for a in \"$@\"; do CMD=\"$CMD$a \"; done\n"
-                    + "exec /data/data/com.termux/files/usr/bin/opencode-root $CMD\n";
-            writeScript(sudo, sudoBody);
-        }
+        String sudoBody = "#!/system/bin/sh\n"
+                + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
+                + "# sudo del sandbox: usa el su real de la app (Magisk).\n"
+                + "while [ $# -gt 0 ]; do\n"
+                + "  case \"$1\" in\n"
+                + "    -E|-H|-n|-S) shift ;;\n"
+                + "    -u) shift; [ $# -gt 0 ] && shift ;;\n"
+                + "    -*) shift ;;\n"
+                + "    *) break ;;\n"
+                + "  esac\n"
+                + "done\n"
+                + "CMD=\"\"\n"
+                + "for a in \"$@\"; do CMD=\"$CMD$a \"; done\n"
+                + "exec /system/bin/sh \"$OC_PREFIX/bin/opencode-root\" $CMD\n";
+        writeScript(sudo, sudoBody);
 
         writeAgentNotes(ctx);
     }
@@ -700,12 +728,13 @@ public final class LocalToolbox {
         File dir = new File(ctx.getFilesDir(), "home/.config/opencode");
         if (!dir.isDirectory() && !dir.mkdirs()) return;
         File f = new File(dir, "AGENTS.md");
-        String body = "# This phone (OpenCode on Android)\n"
+        boolean lab = "com.opencode.launcher.v2lab".equals(ctx.getPackageName());
+        String rootNotes = lab
+                ? "## Root\nRoot is intentionally denied for this lab app. Do not use `su`,\n"
+                + "`opencode-root` or `sudo`: they return\n"
+                + "`{\"ok\":false,\"error\":\"sin permiso de su\"}`. Use non-root tools instead.\n"
                 + "\n"
-                + "You run inside a Termux-like sandbox owned by the OpenCode app.\n"
-                + "\n"
-                + "## Root\n"
-                + "The phone has root through Magisk. Use:\n"
+                : "## Root\nThe phone has root through Magisk. Use:\n"
                 + "\n"
                 + "    opencode-root <command>\n"
                 + "\n"
@@ -716,12 +745,52 @@ public final class LocalToolbox {
                 + "\n"
                 + "`sudo <command>` also works and uses the same root.\n"
                 + "\n"
+                + "The `su`, `sudo`, `opencode-root` and `termux-*` scripts are generated by\n"
+                + "the app. If one fails with `No such file or directory`, it is a stale\n"
+                + "wrapper; tell the user instead of assuming root is unavailable.\n"
+                + "\n";
+        String androidNotes = lab
+                ? "Permission denied or Access denied, do not retry with\n"
+                + "`opencode-root` in this lab; use a non-root alternative.\n"
+                : "Permission denied or Accessed denied, retry with opencode-root.\n";
+        String batteryNotes = lab
+                ? "Cycle count needs root, which is denied in this lab. `termux-battery-status`\n"
+                + "works without root and reports the battery percentage, status, temperature,\n"
+                + "voltage, technology, health and plugged state.\n"
+                : "Cycle count (when the kernel exposes it) needs root:\n"
+                + "\n"
+                + "    opencode-root cat /sys/class/power_supply/battery/cycle_count\n"
+                + "\n"
+                + "termux-battery-status includes `cycle_count` when root is granted.\n";
+        String body = "# This phone (OpenCode on Android)\n"
+                + "\n"
+                + "You run inside a Termux-like sandbox owned by the OpenCode app.\n"
+                + "\n"
+                + "## Environment facts\n"
+                + "\n"
+                + "- Check the Android version with `getprop ro.build.version.release` (and\n"
+                + "  `getprop ro.build.version.sdk`). Do not infer it from `uname -a`: the\n"
+                + "  kernel string may say `android12` even on a newer Android release.\n"
+                + "- There is no readable `/etc/resolv.conf`. HTTP(S) from `curl`/`wget` goes\n"
+                + "  through the app's local proxy (`http_proxy`, `https_proxy`, `all_proxy`\n"
+                + "  point at 127.0.0.1). `curl` reporting `remote_ip=127.0.0.1` and\n"
+                + "  sub-millisecond DNS is normal: the proxy resolves DNS through Android.\n"
+                + "- The proxy supports both CONNECT (HTTPS) and plain HTTP. If one host times\n"
+                + "  out, try another host before concluding that the proxy blocks ports or\n"
+                + "  requires CONNECT. `curl --noproxy '*'` also works.\n"
+                + "- ICMP (`ping <ip>`) goes direct, not through the proxy.\n"
+                + "- `ip addr`, `ip route show table all`, `ss` and `/proc/net/tcp` may fail\n"
+                + "  with netlink/permission errors in the native shell. They work inside\n"
+                + "  the proot sandbox (commands such as `su`, `pkg` and `termux-*` start\n"
+                + "  there). Do not conclude the network is down from a netlink error.\n"
+                + "\n"
+                + rootNotes
                 + "## Android commands\n"
                 + "am, pm, settings, getprop, logcat, dumpsys, input, wm, svc,\n"
                 + "screencap, uiautomator, appops, ip, ss and mount run the real\n"
                 + "Android tools (the sandbox wraps them so its libraries do not\n"
                 + "break them). Many still need root: if you see SecurityException,\n"
-                + "Permission denied or Accessed denied, retry with opencode-root.\n"
+                + androidNotes
                 + "\n"
                 + "/sdcard and /storage are readable and writable.\n"
                 + "\n"
@@ -735,11 +804,7 @@ public final class LocalToolbox {
                 + "to the phone app.\n"
                 + "\n"
                 + "## Battery\n"
-                + "Cycle count (when the kernel exposes it) needs root:\n"
-                + "\n"
-                + "    opencode-root cat /sys/class/power_supply/battery/cycle_count\n"
-                + "\n"
-                + "termux-battery-status includes `cycle_count` when root is granted.\n";
+                + batteryNotes;
         try (java.io.FileWriter w = new java.io.FileWriter(f, false)) {
             w.write(body);
         } catch (IOException ignored) {
@@ -764,6 +829,7 @@ public final class LocalToolbox {
             return;
         }
         String body = "#!/system/bin/sh\n"
+                + nativeCurlPrelude(ctx, pref)
                 + "# Instalador de paquetes de OpenCode (paquetes Termux).\n"
                 + "# uso: pkg install git python ...\n"
                 + "VERB=$1; shift\n"
@@ -773,13 +839,7 @@ public final class LocalToolbox {
                 + "TOK=$OPENCODE_TOOLBOX_TOKEN\n"
                 + "BODY=\"pkgs=$PKGS&token=$TOK\"\n"
                 + "URL=\"http://127.0.0.1:$PORT/install\"\n"
-                + "if command -v curl >/dev/null 2>&1; then\n"
-                + "  exec curl -s -X POST --data \"$BODY\" \"$URL\"\n"
-                + "fi\n"
-                + "if /system/bin/toybox wget --help >/dev/null 2>&1; then\n"
-                + "  exec /system/bin/toybox wget -q -O - --post-data=\"$BODY\" \"$URL\"\n"
-                + "fi\n"
-                + "echo \"pkg: falta curl o wget en el sandbox\" >&2\n";
+                + "oc_curl -s -X POST --data \"$BODY\" \"$URL\"\n";
         try (java.io.FileWriter w = new java.io.FileWriter(shim, false)) {
             w.write(body);
         } catch (IOException ignored) {

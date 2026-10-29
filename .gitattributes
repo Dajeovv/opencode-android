@@ -3,3 +3,4 @@
 *.apk binary
 *.png binary
 *.jks binary
+app/src/main/jniLibs/**/*.so -text

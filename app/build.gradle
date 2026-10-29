@@ -7,14 +7,21 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.opencode.launcher"
+        // Paquete propio de la app v2: convive instalada con la v1 (.next).
+        // Ya no es un "launcher": el id publico es com.opencode.android.
+        applicationId "com.opencode.android"
         minSdk 26
         targetSdk 34
-        versionCode 172
-        versionName "4.0.1"
-        buildConfigField "int", "SERVER_PORT", "4096"
+        versionCode 174
+        versionName "5.0.0"
+        buildConfigField "int", "SERVER_PORT", "4099"
         // Version del binario empaquetado en jniLibs. Actualizarla al cambiarlo.
-        buildConfigField "String", "OPENCODE_VERSION", "\"1.19.4\""
+        buildConfigField "String", "OPENCODE_VERSION", "\"2.2.0\""
+        // v2: runtime 2.x con la UI nueva (viewport, service worker, avisos).
+        buildConfigField "boolean", "V2", "true"
+        // Aislamiento del laboratorio. En la app real va en false: updates
+        // del launcher y auto-permisos activos.
+        buildConfigField "boolean", "V2_LAB", "false"
         ndk {
             abiFilters 'arm64-v8a'
         }
@@ -46,20 +53,19 @@ android {
             minifyEnabled false
             signingConfig signingConfigs.release
         }
-        // App 4.0.x (Next): runtime embebido, sin Termux, con paquete aparte.
-        // Se firma con la clave de release.
+        // App 5.x: RC con la clave de release y el paquete definitivo.
         beta {
             initWith release
             matchingFallbacks = ['release']
-            applicationIdSuffix ".next"
-            buildConfigField "int", "SERVER_PORT", "4098"
+            buildConfigField "int", "SERVER_PORT", "4099"
             signingConfig signingConfigs.release
         }
+        // Build de pruebas separado para no tocar la app instalada.
         debug {
             minifyEnabled false
-            applicationIdSuffix ".next"
-            versionNameSuffix "-next"
-            buildConfigField "int", "SERVER_PORT", "4098"
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
+            buildConfigField "int", "SERVER_PORT", "4100"
         }
     }
 
