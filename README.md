@@ -86,7 +86,7 @@ Both editions use the same release signing key, so future updates install over t
 - **Self-updating within its channel.** opencode and the app update from GitHub Releases; opencode updates verify the checksum and roll back if the new binary does not start.
 - **Watchdog and notifications.** Optional restart/notify if the server goes down; boot start; daily update check.
 - **Optional root.** If the phone is rooted, the app can request `su` for commands that need it. Root is not required.
-- **v1 is bilingual ES/EN** and follows the system language and light/dark theme. v2 ships the new English 2.x interface.
+- **v1 is bilingual ES/EN** and follows the system language and light/dark theme. v2 ships the new 2.x interface.
 
 ## Requirements
 
