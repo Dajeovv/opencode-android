@@ -152,6 +152,11 @@ The v1 package id is `com.opencode.launcher.next`; the `.next` suffix is histori
 - **Keyboard** resizes the chat so the composer stays above the keyboard on first open and after toggling it.
 - **Share** is available from other apps, like v1.
 
+### Sharing files
+
+- Up to 10 files, 50 MB each, 100 MB total.
+- Copies stay in `Downloads/opencode-shares` (or the private folder on Android 10) and are cleaned after 7 days.
+
 ## The toolbox
 
 The APK carries the aarch64 packages and installs them on first run — no second app:
@@ -208,17 +213,8 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 
 ## Known limitations
 
-- **Test coverage**: verified on one physical Android 15 arm64 device. Android 8-14, other OEMs, tablets, and 16 KB-page devices are untested. The APK and libraries are 16 KB-aligned, but there is no 16 KB hardware evidence yet.
-- **v2 data**: v2 is a new package and starts with fresh private storage. Existing v1 sessions are not migrated automatically. Keep v1 installed if you need them.
-- **Android 8-10 storage**: the legacy-permission and private-folder fallback compiles but has not run on real Android 8-10 hardware.
-- **Wi-Fi details**: SSID/BSSID require location, which the app deliberately does not request.
-- **Root-only commands**: `dumpsys wifi`, `settings`, and `ip`/`ifconfig`/`netstat` fail without root. If root is enabled, grant the app in Magisk; some Magisk configurations (for example, Superuser access set to ADB-only) hide `su` from apps until changed.
-- **Memory**: the app and server are memory-heavy; phones with 4 GB or less may see the server killed in the background.
-- **First run needs internet**: npm dependencies and the package index are downloaded then. Offline first runs are not supported.
-- **Background limits**: some vendors freeze long background downloads; the watchdog and battery settings help.
-- **Install unknown apps**: the direct settings screen is not available on every vendor; the app falls back to the app-details page.
-- **File sharing**: up to 10 files, 50 MB each, 100 MB total. Copies stay in `Downloads/opencode-shares` (or the private folder on Android 10) and are cleaned after 7 days.
-- **Distribution**: GitHub Releases only; the app is not on Google Play.
+- **Test coverage**: verified on one physical Android 15 arm64 device. Android 8-14 (including the legacy storage fallback), other OEMs, tablets, and 16 KB-page devices are untested. The APK is 16 KB-aligned, but there is no 16 KB hardware evidence yet.
+- **Memory**: the app and server can be memory-heavy; phones with 3 GB or less may see the server killed in the background.
 
 ## Troubleshooting
 
