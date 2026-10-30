@@ -38,10 +38,16 @@
 [opencode](https://github.com/anomalyco/opencode) is a real coding agent, not just a chatbot. It can inspect and edit files, run commands, and — with wireless ADB — control apps and the UI, all from your phone.
 
 <p align="center">
-  <a href="docs/demo.gif"><img src="docs/demo.gif" alt="OpenCode Android v1 demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
+  <a href="docs/demo-v1.gif"><img src="docs/demo-v1.gif" alt="OpenCode Android v1 demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
 </p>
 
-<p align="center"><em>v1 classic UI: opencode 1.19.4 running natively on the phone — ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root required.</em></p>
+<p align="center"><em>v1 classic UI: opencode 1.x running natively on the phone — ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root required.</em></p>
+
+<p align="center">
+  <a href="docs/demo-v2.gif"><img src="docs/demo-v2.gif" alt="OpenCode Android v2 demo: native ARM64 check, Fibonacci script, edit, and Android toast" width="360"></a>
+</p>
+
+<p align="center"><em>v2 new UI: opencode 2.x running natively on the phone — ARM64 check, Fibonacci script, edit, and an Android toast — no Termux, no PC, no root required.</em></p>
 
 ## Choose your edition
 
