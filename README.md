@@ -66,21 +66,6 @@ RAM use depends on open sessions and extensions, but v2 is the lighter edition: 
 
 Both editions use the same release signing key, so future updates install over the same app without uninstalling it.
 
-## Screenshots (v1 classic UI)
-
-<table align="center">
-  <tr>
-    <th align="center">Chat</th>
-    <th align="center">Sessions</th>
-    <th align="center">Launch</th>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/chat.png" alt="Chat" width="250"></td>
-    <td align="center"><img src="docs/sessions.png" alt="Sessions" width="250"></td>
-    <td align="center"><img src="docs/splash.png" alt="Launch" width="250"></td>
-  </tr>
-</table>
-
 ## What you get
 
 - **The app is the chat.** No Termux, no PC, no wizard. Open the app, the server starts by itself, and the chat appears as soon as it is healthy.
