@@ -50,10 +50,13 @@
 | **Package** | `com.opencode.launcher.next` | `com.opencode.android` |
 | **opencode** | 1.19.4 | 2.2.0 |
 | **Interface** | Chat-first classic UI | New 2.x interface |
+| **RAM** | Higher — classic 1.x runtime and UI | **Lower** — lighter 2.x runtime and UI |
 | **Install** | Update in place from 4.0.x | Fresh install, side by side with v1 |
 | **Data** | Keeps sessions, projects, runtime and root grant | New private storage; no automatic migration |
 | **Updates** | 4.x app + opencode 1.x | 5.x app + opencode 2.x |
 | **Best for** | Existing users and existing sessions | Trying the new interface without touching v1 |
+
+RAM use depends on open sessions and extensions, but v2 is the lighter edition: the 2.x runtime and UI need less memory than the classic 1.x stack.
 
 Both editions use the same release signing key, so future updates install over the same app without uninstalling it.
 
