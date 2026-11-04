@@ -67,6 +67,10 @@ public class LocalServerService extends Service {
         // foreground, asi que puede esperar en segundo plano.
         new Thread(() -> {
             try {
+                // Con root, el home necesita "sdcard" como bind mount antes
+                // de arrancar el servidor: asi el selector muestra rutas
+                // limpias (~/sdcard/...) y no rutas con "..".
+                LocalRuntime.ensureSdcardMount(getApplicationContext());
                 boolean ok = LocalRuntime.start(getApplicationContext(), BuildConfig.SERVER_PORT);
                 if (ok) {
                     // La UI v2 corta su EventSource al ocultarse: el servicio

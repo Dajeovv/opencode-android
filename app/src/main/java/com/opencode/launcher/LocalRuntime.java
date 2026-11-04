@@ -43,6 +43,7 @@ public final class LocalRuntime {
     private static final int MAX_REMEMBERED_PROJECTS = 8;
     private static final long NATIVE_HEALTH_TIMEOUT_MS = 45_000;
     private static final Object GIT_LOCK = new Object();
+    private static final Object SDCARD_LOCK = new Object();
 
     private static Process process;
     private static String activeBinPath;
@@ -62,6 +63,38 @@ public final class LocalRuntime {
             return home.getCanonicalFile();
         } catch (IOException e) {
             return home;
+        }
+    }
+
+    /**
+     * Monta /storage/emulated/0 dentro de HOME como "sdcard" para que el
+     * selector de proyectos muestre rutas limpias (~/sdcard/...) en vez de
+     * rutas con "..". Es un bind mount, no un symlink: el servidor v2 no
+     * lista symlinks en /api/fs/list. Sin root no hace nada.
+     */
+    public static void ensureSdcardMount(Context ctx) {
+        synchronized (SDCARD_LOCK) {
+            ensureSdcardMountLocked(ctx);
+        }
+    }
+
+    private static void ensureSdcardMountLocked(Context ctx) {
+        File dir = new File(homeDir(ctx), "sdcard");
+        String path = dir.getAbsolutePath();
+        String q = "'" + path.replace("'", "'\\''") + "'";
+        String cmd = "p=" + q + "; "
+                + "if grep -qF \" $p \" /proc/mounts; then echo ok; exit 0; fi; "
+                + "umount \"$p\" 2>/dev/null; "
+                + "if [ -L \"$p\" ]; then rm -f \"$p\"; fi; "
+                + "if [ -d \"$p\" ] && [ -n \"$(ls -A \"$p\" 2>/dev/null | head -n 1)\" ]; then "
+                + "echo not-empty; exit 0; fi; "
+                + "mkdir -p \"$p\"; "
+                + "mount --bind /storage/emulated/0 \"$p\" && echo ok";
+        String out = RootShell.run(ctx, cmd, 15000);
+        if (out == null) {
+            Log.i(TAG, "sdcard bind: sin root");
+        } else {
+            Log.i(TAG, "sdcard bind: " + (out.isEmpty() ? "ok" : out));
         }
     }
 

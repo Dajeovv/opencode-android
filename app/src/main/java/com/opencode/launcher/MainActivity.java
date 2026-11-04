@@ -3241,6 +3241,7 @@ public class MainActivity extends AppCompatActivity {
                         snack(T("Pidiendo root...", "Asking for root..."));
                         new Thread(() -> {
                             boolean ok = RootShell.request(this);
+                            if (ok) LocalRuntime.ensureSdcardMount(this);
                             runOnUiThread(() -> {
                                 snack(ok ? T("Root concedido", "Root granted")
                                         : T("Root denegado", "Root denied"));
