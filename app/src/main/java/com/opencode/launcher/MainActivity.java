@@ -381,7 +381,9 @@ public class MainActivity extends AppCompatActivity {
         // Si el movil tiene root, se pide su permiso de su al abrir (Magisk/
         // KernelSU muestran su dialogo normal). Denegado no se vuelve a pedir.
         if (RootShell.available() && RootShell.enabled(this)) {
-            new Thread(() -> RootShell.request(this), "su-request").start();
+            new Thread(() -> {
+                if (RootShell.request(this)) LocalRuntime.ensureSdcardMount(this);
+            }, "su-request").start();
         }
 
         WebSettings s = web.getSettings();
@@ -2875,6 +2877,7 @@ public class MainActivity extends AppCompatActivity {
                         snack(T("Pidiendo root...", "Asking for root..."));
                         new Thread(() -> {
                             boolean ok = RootShell.request(this);
+                            if (ok) LocalRuntime.ensureSdcardMount(this);
                             runOnUiThread(() -> {
                                 snack(ok ? T("Root concedido", "Root granted")
                                         : T("Root denegado", "Root denied"));

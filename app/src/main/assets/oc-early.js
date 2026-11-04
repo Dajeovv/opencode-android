@@ -13,6 +13,12 @@
  *     worktree como "/" y el watcher recorre todo el sistema de archivos.
  *     El puente ocConfig lo hace con el git nativo del APK.
  *
+ *  3. El dialogo "Add project" empieza en el home privado de la app, que no
+ *     tiene carpetas de usuario. Con root, el APK monta /storage/emulated/0
+ *     en HOME/sdcard (bind mount) y se inyectan sus carpetas como
+ *     "sdcard/<nombre>/" para elegir una directamente. Sin root se usa el
+ *     fallback con "..": el servidor lo resuelve, pero no sigue symlinks.
+ *
  * Todo es defensivo: si algo falla, se deja pasar la peticion original.
  */
 (function () {
@@ -206,29 +212,127 @@
     return hiddenName(entry.name || entry.path || '');
   }
 
+  /*
+   * El home privado (/data/data/<pkg>/files/home) esta cinco niveles por
+   * debajo de "/". Se usa una ruta relativa con ".." porque el servidor la
+   * resuelve pero no sigue symlinks. Asi el selector puede entrar en
+   * /storage/emulated/0 sin tocar el home ni crear enlaces.
+   */
+  var SDCARD_ROOT = '/storage/emulated/0';
+
+  function homeToSdcard() {
+    var home = appHome();
+    if (!home) return '';
+    var parts = home.split('/').filter(function (p) { return p; });
+    if (parts.length < 2) return '';
+    var rel = '';
+    for (var i = 0; i < parts.length; i++) rel += '../';
+    return rel + 'storage/emulated/0';
+  }
+
+  function isHomeDir(dir) {
+    var home = appHome();
+    if (!home || !dir) return false;
+    return String(dir).replace(/\/+$/, '') === home;
+  }
+
+  function filterEntries(list, dir) {
+    var inHome = isHomeDir(dir);
+    return list.filter(function (e) {
+      if (typeof e === 'string') {
+        // El selector solo quiere carpetas. En v1 /find/file?dirs=true
+        // mezcla ficheros ("nota.txt") con carpetas ("docs/").
+        if (e !== '/' && e.charAt(e.length - 1) !== '/') return false;
+      } else if (e && e.type && e.type !== 'directory') {
+        return true;
+      }
+      // "lib" es la carpeta nativa del runtime dentro de HOME; no es un
+      // proyecto del usuario. Solo se oculta en la raiz de HOME.
+      if (inHome && baseName(typeof e === 'string' ? e : (e.name || e.path)) === 'lib') {
+        return false;
+      }
+      return !hiddenDir(e);
+    });
+  }
+
   function stripHiddenDirs(text, dir) {
     try {
       var list = JSON.parse(text);
       if (!Array.isArray(list)) return text;
-      var home = appHome();
-      var inHome = home && dir &&
-        String(dir).replace(/\/+$/, '') === home;
-      var out = list.filter(function (e) {
-        if (typeof e === 'string') {
-          // El selector solo quiere carpetas. En v1 /find/file?dirs=true
-          // mezcla ficheros ("nota.txt") con carpetas ("docs/").
-          if (e !== '/' && e.charAt(e.length - 1) !== '/') return false;
-        } else if (e && e.type && e.type !== 'directory') {
-          return true;
-        }
-        // "lib" es la carpeta nativa del runtime dentro de HOME; no es un
-        // proyecto del usuario. Solo se oculta en la raiz de HOME.
-        if (inHome && baseName(typeof e === 'string' ? e : (e.name || e.path)) === 'lib') {
-          return false;
-        }
-        return !hiddenDir(e);
-      });
+      var out = filterEntries(list, dir);
       return out.length === list.length ? text : JSON.stringify(out);
+    } catch (e) {
+      return text;
+    }
+  }
+
+  /*
+   * Lista las carpetas reales de /storage/emulated/0 y las devuelve como
+   * entradas dentro del home. Con root el origen es el bind mount
+   * (HOME/sdcard); sin root es la ruta relativa con "..". El dialogo une
+   * entry.path con la carpeta actual e ignora entry.absolute.
+   */
+  function sdcardDirs(list, mounted) {
+    var home = appHome();
+    var rel = mounted ? 'sdcard' : homeToSdcard();
+    if (!home || !rel) return Promise.resolve(list);
+    var url = '/file?path=&directory=' +
+      encodeURIComponent(home + '/' + rel);
+    return nativeFetch(url).then(function (r) {
+      if (!r || !r.ok) return list;
+      return r.json().then(function (items) {
+        if (!Array.isArray(items)) return list;
+        var seen = Object.create(null);
+        for (var i = 0; i < list.length; i++) {
+          var e = list[i];
+          if (e && e.name) seen[e.name] = true;
+        }
+        var out = list.slice();
+        var absoluteRoot = mounted ? home + '/sdcard' : SDCARD_ROOT;
+        for (var j = 0; j < items.length; j++) {
+          var it = items[j];
+          if (!it || it.type !== 'directory') continue;
+          var name = it.name || baseName(it.path);
+          if (!name || name.charAt(0) === '.' || seen[name]) continue;
+          seen[name] = true;
+          out.push({
+            name: name,
+            path: rel + '/' + name + '/',
+            absolute: absoluteRoot + '/' + name,
+            type: 'directory',
+            ignored: false
+          });
+        }
+        return out;
+      });
+    }).catch(function () {
+      return list;
+    });
+  }
+
+  function hasSdcard(list) {
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i];
+      if (e && (e.name === 'sdcard' || baseName(e.path) === 'sdcard')) return true;
+    }
+    return false;
+  }
+
+  function pickerList(text, dir) {
+    try {
+      var list = JSON.parse(text);
+      if (!Array.isArray(list)) return text;
+      var out = filterEntries(list, dir);
+      // En moviles con root, el APK monta /storage/emulated/0 en HOME/sdcard.
+      // El servidor lo lista como una carpeta normal y las rutas quedan
+      // limpias (~/sdcard/Download). El fallback con ".." solo se usa si el
+      // montaje no existe (sin root o si el montaje fallo).
+      if (!isHomeDir(dir)) return JSON.stringify(out);
+      // Si el servidor ya lista "sdcard" (bind mount), se inyectan sus
+      // carpetas como "sdcard/<nombre>/" para poder elegir una directamente.
+      return sdcardDirs(out, hasSdcard(out)).then(function (merged) {
+        return JSON.stringify(merged);
+      });
     } catch (e) {
       return text;
     }
@@ -239,11 +343,12 @@
     var ct = r.headers.get('content-type') || '';
     if (ct.indexOf('application/json') < 0) return r;
     return r.text().then(function (text) {
-      var body = fn(text);
-      return new Response(body, {
-        status: r.status,
-        statusText: r.statusText,
-        headers: r.headers
+      return Promise.resolve(fn(text)).then(function (body) {
+        return new Response(body, {
+          status: r.status,
+          statusText: r.statusText,
+          headers: r.headers
+        });
       });
     });
   }
@@ -342,6 +447,7 @@
     if (isPickerList(u, method) || isPickerFind(u, method)) {
       return nativeFetch(input, init).then(function (r) {
         return filterJson(r, function (text) {
+          if (isPickerList(u, method)) return pickerList(text, dir);
           return stripHiddenDirs(text, dir);
         });
       });

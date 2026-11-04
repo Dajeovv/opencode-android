@@ -66,6 +66,10 @@ public class LocalServerService extends Service {
         // foreground, asi que puede esperar en segundo plano.
         new Thread(() -> {
             try {
+                // Con root, el home necesita "sdcard" como bind mount antes
+                // de arrancar el servidor: asi el selector muestra rutas
+                // limpias (~/sdcard/...) y no rutas con "..".
+                LocalRuntime.ensureSdcardMount(getApplicationContext());
                 LocalRuntime.start(getApplicationContext(), BuildConfig.SERVER_PORT);
             } catch (Exception e) {
                 Log.w("OpenCodeLocal", "no se pudo arrancar el runtime: " + e, e);
