@@ -72,7 +72,9 @@ public class ToolboxService extends Service {
         final ArrayList<String> wanted = pkgs;
         if (running) return START_NOT_STICKY;
         running = true;
-        startForeground(NID, notify("Instalando herramientas", "Preparando...", 0, 0, true));
+        startForeground(NID, notify(
+                ServerWatch.t(this, "Instalando herramientas", "Installing tools"),
+                ServerWatch.t(this, "Preparando...", "Preparing..."), 0, 0, true));
         Log.i(TAG, "foreground puesto, hilo de instalacion");
         new Thread(() -> {
             String error = null;
@@ -85,7 +87,8 @@ public class ToolboxService extends Service {
 
                     @Override
                     public void onBytes(long done, long total) {
-                        update("Descargando paquetes", done, total, false);
+                        update(ServerWatch.t(ToolboxService.this,
+                                "Descargando paquetes", "Downloading packages"), done, total, false);
                     }
                 };
                 if (bundled) {
@@ -113,7 +116,7 @@ public class ToolboxService extends Service {
                 selfTest(this);
             } else {
                 // Error visible pero descartable; nunca deja un aviso fijo.
-                update("Fallo: " + err, 0, 0, false, false);
+                update(ServerWatch.t(this, "Fallo: ", "Failed: ") + err, 0, 0, false, false);
             }
             stopSelf();
         }, "toolbox-install").start();
@@ -146,12 +149,12 @@ public class ToolboxService extends Service {
                 "termux-clipboard-get",
                 "termux-wifi-connectioninfo | head -c 120",
                 "termux-sensor-list | head -c 120",
-                "termux-clipboard-set 'texto de prueba'",
+                "termux-clipboard-set 'installation complete'",
                 "termux-clipboard-get",
                 "termux-brightness",
                 "termux-volume",
                 "termux-sensor accelerometer | head -c 150",
-                "termux-toast 'hola desde opencode'",
+                "termux-toast 'hello from opencode'",
                 "termux-vibrate 200"
         };
         for (String c : cmds) {

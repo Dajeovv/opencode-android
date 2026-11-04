@@ -159,7 +159,9 @@ public final class LocalToolbox {
         if (!work.isDirectory() && !work.mkdirs()) throw new IOException("no toolbox dir");
         File gz = new File(work, "Packages.gz");
         if (!gz.isFile() || now - gz.lastModified() > INDEX_MAX_AGE) {
-            if (p != null) p.onStep("Descargando el indice de paquetes...");
+            if (p != null) p.onStep(ServerWatch.t(ctx,
+                    "Descargando el indice de paquetes...",
+                    "Downloading the package index..."));
             download(REPO + "/dists/stable/main/binary-" + ABI + "/Packages.gz", gz, null, 0);
         }
         Map<String, Pkg> map = parseIndex(gz);
@@ -303,7 +305,8 @@ public final class LocalToolbox {
             throw new IOException("no staging dir: " + stage.getName());
         }
         for (Pkg pkg : plan) {
-            if (p != null) p.onStep("Instalando " + pkg.name + " " + pkg.version);
+            if (p != null) p.onStep(ServerWatch.t(ctx, "Instalando ", "Installing ")
+                    + pkg.name + " " + pkg.version);
             File deb = new File(stage, pkg.name + ".deb");
             if (!deb.isFile() || deb.length() != pkg.size) {
                 download(REPO + "/" + pkg.filename, deb, p, done);
@@ -367,7 +370,9 @@ public final class LocalToolbox {
             if (!name.endsWith(".deb")) continue;
             String pkg = nameFromDeb(name);
             if (!boot.contains(pkg)) continue;
-            if (p != null) p.onStep("Preparando el gestor de paquetes (" + pkg + ")");
+            if (p != null) p.onStep(ServerWatch.t(ctx,
+                    "Preparando el gestor de paquetes (",
+                    "Preparing the package manager (") + pkg + ")");
             File deb = copyAsset(ctx, debs, name);
             extractDeb(deb, pref);
             deb.delete();
@@ -384,14 +389,18 @@ public final class LocalToolbox {
             if (!name.endsWith(".deb")) continue;
             copyAsset(ctx, stage, name);
         }
-        if (p != null) p.onStep("Registrando los paquetes (dpkg)...");
+        if (p != null) p.onStep(ServerWatch.t(ctx,
+                "Registrando los paquetes (dpkg)...",
+                "Registering packages (dpkg)..."));
         String dpkgOut = LocalRuntime.runInSandbox(ctx,
                 "dpkg --unpack /tmp/toolbox-debs/*.deb >/dev/null 2>&1; "
                         + "dpkg --configure -a 2>&1 | tail -5", 600000);
         Log.i(TAG, "dpkg: " + dpkgOut.replace("\n", " | "));
 
         // Fase 3: el indice de paquetes para apt.
-        if (p != null) p.onStep("Actualizando el indice de apt...");
+        if (p != null) p.onStep(ServerWatch.t(ctx,
+                "Actualizando el indice de apt...",
+                "Updating the apt index..."));
         LocalRuntime.runInSandbox(ctx, "apt-get update -qq 2>&1 | tail -3", 300000);
 
         List<String> done = new ArrayList<>();
