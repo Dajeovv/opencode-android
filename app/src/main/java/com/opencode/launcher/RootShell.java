@@ -85,6 +85,61 @@ public final class RootShell {
         return p != null ? p : (resolveSu() != null ? resolved : "su");
     }
 
+    /** Gestores de root conocidos, en orden de preferencia. */
+    private static final String[] MANAGERS = {
+            "com.topjohnwu.magisk", "me.weishu.kernelsu", "me.bmax.apatch"
+    };
+
+    private static boolean installed(Context c, String pkg) {
+        try {
+            c.getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** true si hay un gestor de root instalado (Magisk, KernelSU o APatch). */
+    public static boolean managerAvailable(Context c) {
+        for (String pkg : MANAGERS) {
+            if (installed(c, pkg)) return true;
+        }
+        return false;
+    }
+
+    /** Abre el gestor de root donde se concede el permiso. Magisk 31+ ya no
+     *  pregunta al abrir una app: hay que darlo a mano en Superuser (+).
+     *  Devuelve false si no hay ningun gestor que abrir. */
+    public static boolean openManager(Context c) {
+        if (installed(c, "com.topjohnwu.magisk")) {
+            try {
+                android.content.Intent i = new android.content.Intent();
+                i.setClassName("com.topjohnwu.magisk",
+                        "com.topjohnwu.magisk.ui.MainActivity");
+                i.putExtra("section", "superuser");
+                i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                c.startActivity(i);
+                return true;
+            } catch (Exception e) {
+                Log.w(TAG, "openManager Magisk: " + e);
+            }
+        }
+        // KernelSU / APatch: su pantalla principal ya lista las apps.
+        for (String pkg : MANAGERS) {
+            try {
+                android.content.Intent i = c.getPackageManager()
+                        .getLaunchIntentForPackage(pkg);
+                if (i != null) {
+                    i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    c.startActivity(i);
+                    return true;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
+    }
+
     /** Estado sin pedir nada: no | off | idle | on | denied. */
     public static String state(Context c) {
         if (!available()) return "no";
