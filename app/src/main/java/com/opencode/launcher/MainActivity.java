@@ -212,6 +212,10 @@ public class MainActivity extends AppCompatActivity {
     /** Arranque del servidor en espera: el usuario esta en Ajustes dando el
      *  permiso de archivos; al volver se arranca solo. */
     private boolean pendingStartAfterPerms = false;
+    /** El usuario fue a Magisk a conceder root: al volver se comprueba solo. */
+    private boolean rootGrantPending = false;
+    /** Dialogo de Opciones abierto, para reflejar el root al volver de Magisk. */
+    private androidx.appcompat.app.AlertDialog optionsDialog;
     private ActivityResultLauncher<Intent> lockLauncher;
     /** Desbloqueo ya pasado en esta vida de la app (el bloqueo se pide una vez). */
     private boolean unlockedRun = false;
@@ -868,6 +872,23 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         if (pendingStartAfterPerms && hasAllFilesAccess()) onAllFilesAccessReady();
+        // Volvemos de Magisk: comprobar si ya concedio el root. Magisk 31+ no
+        // pregunta solo, asi que el primer intento suele quedar denegado.
+        if (rootGrantPending) {
+            rootGrantPending = false;
+            new Thread(() -> {
+                boolean ok = RootShell.request(this);
+                if (ok) LocalRuntime.ensureSdcardMount(this);
+                runOnUiThread(() -> {
+                    boolean reopen = optionsDialog != null && optionsDialog.isShowing();
+                    if (reopen) optionsDialog.dismiss();
+                    snack(ok ? T("Root concedido", "Root granted")
+                            : T("Aun sin permiso: Magisk > Superuser > + > OpenCode",
+                                    "Still no permission: Magisk > Superuser > + > OpenCode"));
+                    if (reopen) showOptionsDialog();
+                });
+            }, "su-recheck").start();
+        }
         // Si el usuario fue a Ajustes a dar acceso a archivos, el envio que
         // quedo esperando continua solo al volver.
         if (pendingStorageShare != null && hasShareStorage()) {
@@ -3222,36 +3243,51 @@ public class MainActivity extends AppCompatActivity {
         addOptionRow(root,
                 T("Root (su)", "Root (su)"),
                 T("Si el movil tiene root, el agente puede ejecutar comandos con su"
-                        + " (Magisk/KernelSU piden permiso). Apagado no pide nada.",
+                        + " (Magisk/KernelSU piden permiso). Apagado no pide nada."
+                        + " Magisk 31+ no pregunta: pulsa Conceder y luego + en Superuser.",
                         "If the phone is rooted, the agent can run commands via su"
-                                + " (Magisk/KernelSU ask). Off never prompts."),
+                                + " (Magisk/KernelSU ask). Off never prompts."
+                                + " Magisk 31+ does not prompt: tap Grant, then + in Superuser."),
                 "no".equals(RootShell.state(this)) ? T("Sin su", "No su")
                         : !RootShell.enabled(this) ? T("OFF", "OFF")
                         : "on".equals(RootShell.state(this)) ? T("Si", "ON")
-                        : "denied".equals(RootShell.state(this)) ? T("Denegado", "Denied")
+                        : "denied".equals(RootShell.state(this)) ? T("Conceder", "Grant")
                         : T("Pedir", "Ask"),
                 () -> {
                     if (!RootShell.available()) {
                         snack(T("Este movil no tiene su", "This phone has no su"));
                         return;
                     }
-                    boolean now = !RootShell.enabled(this);
-                    RootShell.setEnabled(this, now);
-                    if (now) {
-                        snack(T("Pidiendo root...", "Asking for root..."));
-                        new Thread(() -> {
-                            boolean ok = RootShell.request(this);
-                            if (ok) LocalRuntime.ensureSdcardMount(this);
-                            runOnUiThread(() -> {
-                                snack(ok ? T("Root concedido", "Root granted")
-                                        : T("Root denegado", "Root denied"));
-                                refresh.run();
-                            });
-                        }, "su-request").start();
-                    } else {
+                    String st = RootShell.state(this);
+                    boolean on = RootShell.enabled(this);
+                    if (on && "on".equals(st)) {
+                        RootShell.setEnabled(this, false);
                         snack(T("Root desactivado", "Root disabled"));
                         refresh.run();
+                        return;
                     }
+                    if (on && "denied".equals(st)) {
+                        showRootGrantHelp();
+                        return;
+                    }
+                    if (!on) RootShell.setEnabled(this, true);
+                    snack(T("Pidiendo root...", "Asking for root..."));
+                    new Thread(() -> {
+                        boolean ok = RootShell.request(this);
+                        if (ok) LocalRuntime.ensureSdcardMount(this);
+                        runOnUiThread(() -> {
+                            if (ok) {
+                                snack(T("Root concedido", "Root granted"));
+                                refresh.run();
+                            } else if (RootShell.managerAvailable(this)) {
+                                // Magisk 31+ ya no muestra el dialogo reactivo.
+                                showRootGrantHelp();
+                            } else {
+                                snack(T("Root denegado", "Root denied"));
+                                refresh.run();
+                            }
+                        });
+                    }, "su-request").start();
                 });
         addOptionRow(root,
                 T("Motor del servidor", "Server engine"),
@@ -3312,6 +3348,48 @@ public class MainActivity extends AppCompatActivity {
                 .setView(scroll)
                 .setNegativeButton(T("Cerrar", "Close"), null)
                 .show();
+        optionsDialog = dlg[0];
+        dlg[0].setOnDismissListener(d -> {
+            if (optionsDialog == dlg[0]) optionsDialog = null;
+        });
+    }
+
+    /** Magisk 31+ retiro el aviso reactivo: el root se concede a mano en
+     *  Superuser (+). Se explica una vez y se abre esa pantalla. */
+    private void showRootGrantHelp() {
+        android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
+        if (p.getBoolean("root_grant_help", false)) {
+            openRootManager();
+            return;
+        }
+        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle(T("Conceder root", "Grant root"))
+                .setMessage(T(
+                        "Magisk 31 y posteriores ya no preguntan al abrir una app.\n\n"
+                                + "1. Pulsa el boton + (Grant Superuser), abajo a la derecha.\n"
+                                + "2. Elige OpenCode en la lista.\n"
+                                + "3. Vuelve aqui: la app comprobara el permiso sola.",
+                        "Magisk 31 and later no longer prompt when an app opens.\n\n"
+                                + "1. Tap the + button (Grant Superuser) at the bottom right.\n"
+                                + "2. Pick OpenCode from the list.\n"
+                                + "3. Come back here: the app will check the permission by itself."))
+                .setPositiveButton(T("Ir a Magisk", "Open Magisk"), (d, w) -> {
+                    p.edit().putBoolean("root_grant_help", true).apply();
+                    openRootManager();
+                })
+                .setNegativeButton(T("Cancelar", "Cancel"), null)
+                .show();
+    }
+
+    /** Lleva al usuario a Magisk > Superuser y deja el reintento armado. */
+    private void openRootManager() {
+        if (!RootShell.openManager(this)) {
+            snack(T("Abre Magisk y concede root a OpenCode en Superuser",
+                    "Open Magisk and grant root to OpenCode in Superuser"));
+            return;
+        }
+        rootGrantPending = true;
+        snack(T("En Magisk: + y elige OpenCode", "In Magisk: + and pick OpenCode"));
     }
 
     private void addOptionRow(android.widget.LinearLayout root, String title,
