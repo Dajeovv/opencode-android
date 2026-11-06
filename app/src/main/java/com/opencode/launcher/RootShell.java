@@ -107,7 +107,23 @@ public final class RootShell {
         return false;
     }
 
-    /** Abre el gestor de root donde se concede el permiso. Magisk 31+ ya no
+    /** versionCode del gestor Magisk, o 0 si no esta instalado. */
+    public static int magiskVersion(Context c) {
+        try {
+            return c.getPackageManager().getPackageInfo(
+                    "com.topjohnwu.magisk", 0).versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** Magisk anterior a 31.1: conserva el aviso reactivo y no tiene el boton +. */
+    public static boolean magiskLegacy(Context c) {
+        int v = magiskVersion(c);
+        return v > 0 && v < 31100;
+    }
+
+    /** Abre el gestor de root donde se concede el permiso. Magisk 31.1+ ya no
      *  pregunta al abrir una app: hay que darlo a mano en Superuser (+).
      *  Devuelve false si no hay ningun gestor que abrir. */
     public static boolean openManager(Context c) {
