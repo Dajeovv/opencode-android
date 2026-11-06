@@ -2880,10 +2880,10 @@ public class MainActivity extends AppCompatActivity {
                 T("Root (su)", "Root (su)"),
                 T("Si el movil tiene root, el agente puede ejecutar comandos con su"
                         + " (Magisk/KernelSU piden permiso). Apagado no pide nada."
-                        + " Magisk 31+ no pregunta: pulsa Conceder y luego + en Superuser.",
+                        + " Si no aparece el aviso, pulsa Conceder.",
                         "If the phone is rooted, the agent can run commands via su"
                                 + " (Magisk/KernelSU ask). Off never prompts."
-                                + " Magisk 31+ does not prompt: tap Grant, then + in Superuser."),
+                                + " If no prompt appears, tap Grant."),
                 "no".equals(RootShell.state(this)) ? T("Sin su", "No su")
                         : !RootShell.enabled(this) ? T("OFF", "OFF")
                         : "on".equals(RootShell.state(this)) ? T("Si", "ON")
@@ -2998,18 +2998,34 @@ public class MainActivity extends AppCompatActivity {
             openRootManager();
             return;
         }
+        boolean legacy = RootShell.magiskLegacy(this);
+        boolean magisk = RootShell.magiskVersion(this) > 0;
+        String msg = legacy
+                ? T("Magisk deberia mostrar un aviso al pedir root.\n\n"
+                        + "Si no aparece, abre Superuser y activa OpenCode en la lista.\n"
+                        + "Ahora te llevo a Superuser. Al volver, la app comprobara el permiso sola.",
+                        "Magisk should show a prompt when root is requested.\n\n"
+                        + "If it does not appear, open Superuser and enable OpenCode in the list.\n"
+                        + "I will take you to Superuser. When you come back, the app will check by itself.")
+                : magisk
+                ? T("Magisk 31.1 y posteriores ya no preguntan al abrir una app.\n\n"
+                        + "1. Pulsa el boton + (Grant Superuser), abajo a la derecha.\n"
+                        + "2. Elige OpenCode en la lista.\n"
+                        + "3. Vuelve aqui: la app comprobara el permiso sola.",
+                        "Magisk 31.1 and later no longer prompt when an app opens.\n\n"
+                        + "1. Tap the + button (Grant Superuser) at the bottom right.\n"
+                        + "2. Pick OpenCode from the list.\n"
+                        + "3. Come back here: the app will check the permission by itself.")
+                : T("Tu gestor de root deberia preguntar al pedir root.\n\n"
+                        + "Si no aparece, abre el gestor y concede OpenCode a mano.\n"
+                        + "Ahora te llevo alli. Al volver, la app comprobara el permiso sola.",
+                        "Your root manager should prompt when root is requested.\n\n"
+                        + "If it does not appear, open the manager and grant OpenCode manually.\n"
+                        + "I will take you there. When you come back, the app will check by itself.");
         new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
                 .setTitle(T("Conceder root", "Grant root"))
-                .setMessage(T(
-                        "Magisk 31 y posteriores ya no preguntan al abrir una app.\n\n"
-                                + "1. Pulsa el boton + (Grant Superuser), abajo a la derecha.\n"
-                                + "2. Elige OpenCode en la lista.\n"
-                                + "3. Vuelve aqui: la app comprobara el permiso sola.",
-                        "Magisk 31 and later no longer prompt when an app opens.\n\n"
-                                + "1. Tap the + button (Grant Superuser) at the bottom right.\n"
-                                + "2. Pick OpenCode from the list.\n"
-                                + "3. Come back here: the app will check the permission by itself."))
-                .setPositiveButton(T("Ir a Magisk", "Open Magisk"), (d, w) -> {
+                .setMessage(msg)
+                .setPositiveButton(T("Abrir gestor", "Open manager"), (d, w) -> {
                     p.edit().putBoolean("root_grant_help", true).apply();
                     openRootManager();
                 })
@@ -3017,15 +3033,22 @@ public class MainActivity extends AppCompatActivity {
                 .show();
     }
 
-    /** Lleva al usuario a Magisk > Superuser y deja el reintento armado. */
+    /** Lleva al usuario al gestor de root (Magisk > Superuser) y deja el
+     *  reintento armado. */
     private void openRootManager() {
         if (!RootShell.openManager(this)) {
-            snack(T("Abre Magisk y concede root a OpenCode en Superuser",
-                    "Open Magisk and grant root to OpenCode in Superuser"));
+            snack(T("Abre tu gestor de root y concede root a OpenCode",
+                    "Open your root manager and grant root to OpenCode"));
             return;
         }
         rootGrantPending = true;
-        snack(T("En Magisk: + y elige OpenCode", "In Magisk: + and pick OpenCode"));
+        if (RootShell.magiskLegacy(this)) {
+            snack(T("Activa OpenCode en Superuser", "Enable OpenCode in Superuser"));
+        } else if (RootShell.magiskVersion(this) > 0) {
+            snack(T("En Magisk: + y elige OpenCode", "In Magisk: + and pick OpenCode"));
+        } else {
+            snack(T("Concede OpenCode en el gestor", "Grant OpenCode in the manager"));
+        }
     }
 
     private void addOptionRow(android.widget.LinearLayout root, String title,
