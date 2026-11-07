@@ -17,6 +17,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 - README and project docs now cover only the standalone 4.0.x app; the old
   setup guides were removed and the changelog starts at 4.0.0.
 
+## [4.0.3] - 2026-11-07
+
+Maintenance release for the classic app (`com.opencode.launcher.next`, versionCode 175).
+
+### Added
+
+- Root grant flow for Magisk 31.1+: the app detects the Magisk version, explains the manual Superuser `+` grant, opens the root manager and rechecks the permission when returning to the app.
+- The project picker shows the real folders from shared storage. With root it bind-mounts `/storage/emulated/0` at `HOME/sdcard`; without root it uses the relative-path fallback.
+
+### Changed
+
+- Root manager detection covers Magisk, KernelSU and APatch through manifest package queries.
+
+### Fixed
+
+- Magisk 31.0 and older keep their reactive prompt; 31.1+ gets the manual grant instructions instead of a misleading "denied" state.
+
 ## [4.0.1] - 2026-10-26
 
 Maintenance release for the standalone app (versionCode 172).
