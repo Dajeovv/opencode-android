@@ -82,7 +82,7 @@ Both editions use the same release signing key, so future updates install over t
 ## Requirements
 
 - Android 8.0+ (API 26), **arm64**.
-- Internet on first run (npm dependencies and the package index) and for updates.
+- Internet access. The first run installs the npm dependencies and the package index; updates use it too.
 - **v2:** ~175 MB download; **v1:** ~142 MB download. The toolbox takes ~200 MB more once unpacked.
 - No Termux, no PC. Root is optional.
 
@@ -121,7 +121,7 @@ The v1 package id is `com.opencode.launcher.next`; the `.next` suffix is histori
 
 ## First run
 
-- The first start needs internet: it unpacks ~200 MB of packages, runs `apt-get update`, and installs the npm dependencies used by the agent. It can take a few minutes.
+- The first start unpacks ~200 MB of packages, runs `apt-get update`, and installs the npm dependencies used by the agent. It can take a few minutes.
 - The default model is the free `opencode.ai` model. You can connect other providers from the opencode settings.
 - Everything lives in the app's private storage. Uninstalling an edition removes its runtime, toolbox, and sessions. Uninstalling v1 does not touch v2, and vice versa.
 
@@ -205,7 +205,6 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 ## Known limitations
 
 - **Test coverage**: verified on one physical Android 15 arm64 device. Android 8-14 (including the legacy storage fallback), other OEMs, tablets, and 16 KB-page devices are untested. The APK is 16 KB-aligned, but there is no 16 KB hardware evidence yet.
-- **Memory**: the app and server can be memory-heavy; phones with 3 GB or less may see the server killed in the background.
 
 ## Troubleshooting
 

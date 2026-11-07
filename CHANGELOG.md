@@ -75,5 +75,5 @@ First 4.0 release. Standalone package `com.opencode.launcher.next` (versionCode
 - Verified on Android 15 arm64 only. Android 8-14, other OEMs, tablets and 16 KB-page devices are untested.
 - Android 8-10 storage fallback compiles but has not run on real hardware.
 - SSID/BSSID require location, which the app does not request. `dumpsys wifi`, `settings` and `ip`/`ifconfig`/`netstat` still need root.
-- First run needs internet (npm dependencies + apt index); low-RAM phones may see the server killed in the background.
+- The first run installs the npm dependencies and apt index.
 - GitHub Releases only; not published on Google Play.
