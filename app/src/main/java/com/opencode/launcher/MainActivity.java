@@ -853,8 +853,7 @@ public class MainActivity extends AppCompatActivity {
         web.resumeTimers();
         checkStatus(false);
         if (!BuildConfig.V2_LAB) {
-            // v2 lleva opencode dentro del APK: el updater del runtime no aplica.
-            if (!BuildConfig.V2) checkForUpdate(false);
+            checkForUpdate(false);
             checkLauncherUpdate(false);
         }
         // Al volver de Ajustes/Termux se recalculan los pasos: la tira de
@@ -1047,8 +1046,6 @@ public class MainActivity extends AppCompatActivity {
 
     /** Updater oficial del runtime: descarga, verifica SHA-256, instala y reinicia. */
     private void startRuntimeUpdate() {
-        // v2 trae el runtime dentro del APK: no se actualiza por separado.
-        if (BuildConfig.V2) return;
         if (updLatest.isEmpty()) return;
         if (!hasAllFilesAccess()) {
             snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
@@ -2790,9 +2787,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** Aviso de update: compara instalada vs ultima de GitHub (cache 24h).
-     *  Con runtime empaquetado solo avisa: el binario va dentro del APK. */
+     *  Con runtime empaquetado el binario externo se instala en files/runtime. */
     private void checkForUpdate(boolean verbose) {
-        if (BuildConfig.V2) return;
         final boolean local = LocalRuntime.available(this);
         final String activeVer = LocalRuntime.activeVersion(this);
         final String runtimeKey = local ? "local:" + activeVer : "termux";
@@ -2804,7 +2800,7 @@ public class MainActivity extends AppCompatActivity {
                 && System.currentTimeMillis() - ts < 24L * 3600 * 1000;
         if (fresh && !verbose) {
             updatePending = p.getBoolean("upd_pending", false);
-            updateInstallable = !local;
+            updateInstallable = BuildConfig.V2 || !local;
             updInstalled = p.getString("upd_installed", "");
             updLatest = p.getString("upd_latest", "");
             refreshUpdateBtn();
@@ -2824,7 +2820,7 @@ public class MainActivity extends AppCompatActivity {
             android.util.Log.d("OC-Update", "check hilo: local=" + local
                     + " arch=" + hasAllFilesAccess());
             String installed = local ? activeVer : queryInstalledVersion();
-            String latest = fetchLatestTag();
+            String latest = UpdateCheck.latestOpencode();
             boolean pending = installed != null && latest != null
                     && cmpVer(latest, installed) > 0;
             getSharedPreferences("app", MODE_PRIVATE).edit()
@@ -2836,7 +2832,7 @@ public class MainActivity extends AppCompatActivity {
                     .putString("upd_latest", latest != null ? latest : "").apply();
             runOnUiThread(() -> {
                 updatePending = pending;
-                updateInstallable = !local;
+                updateInstallable = BuildConfig.V2 || !local;
                 updInstalled = installed != null ? installed : "";
                 updLatest = latest != null ? latest : "";
                 refreshUpdateBtn();
@@ -2926,30 +2922,6 @@ public class MainActivity extends AppCompatActivity {
             }
             String v = new JSONObject(sb.toString()).optString("version", "");
             return v.isEmpty() ? null : parseVer(v);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** Ultima release de sst/opencode en GitHub (10s; null si no hay red). */
-    private String fetchLatestTag() {
-        try {
-            java.net.HttpURLConnection c = (java.net.HttpURLConnection)
-                    new java.net.URL("https://api.github.com/repos/sst/opencode/releases/latest")
-                            .openConnection();
-            c.setRequestProperty("User-Agent", "opencode-android");
-            c.setRequestProperty("Accept", "application/vnd.github+json");
-            c.setConnectTimeout(10000);
-            c.setReadTimeout(10000);
-            StringBuilder sb = new StringBuilder();
-            try (java.io.BufferedReader br = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(c.getInputStream()))) {
-                String line;
-                while ((line = br.readLine()) != null) sb.append(line);
-            }
-            String tag = new JSONObject(sb.toString()).optString("tag_name", "");
-            if (tag.startsWith("v") || tag.startsWith("V")) tag = tag.substring(1);
-            return parseVer(tag);
         } catch (Exception e) {
             return null;
         }
@@ -3172,7 +3144,7 @@ public class MainActivity extends AppCompatActivity {
     private void showOptionsDialog() {
         android.content.SharedPreferences up = getSharedPreferences("app", MODE_PRIVATE);
         updatePending = up.getBoolean("upd_pending", false);
-        updateInstallable = !LocalRuntime.available(this);
+        updateInstallable = BuildConfig.V2 || !LocalRuntime.available(this);
         updInstalled = up.getString("upd_installed", "");
         updLatest = up.getString("upd_latest", "");
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
