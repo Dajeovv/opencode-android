@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.0"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
+  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.1"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.2"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
+  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
 </p>
 
 <p align="center"><sub><b>v2</b> new UI &nbsp;·&nbsp; opencode 2.x &nbsp;·&nbsp; 175 MB &nbsp;&nbsp;|&nbsp;&nbsp; <b>v1</b> classic UI &nbsp;·&nbsp; opencode 1.x &nbsp;·&nbsp; 142 MB</sub></p>
@@ -90,7 +90,7 @@ Both editions use the same release signing key, so future updates install over t
 
 ### v2 — new UI
 
-1. Download `OpenCodeAndroid-v5.0.0.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.0).
+1. Download `OpenCodeAndroid-v5.0.1.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.1).
 2. Open the file. If Android blocks it, allow **Install unknown apps** for your browser or file manager.
 3. Install and open **OpenCode Android v2**. It installs alongside v1; both can stay on the phone.
 4. Grant **All files access** when asked (Android 11+), or storage access on Android 8-10. This lets the agent read `/sdcard` and receive shared files.
@@ -100,7 +100,7 @@ v2 uses its own package and its own private storage. It does not read v1 session
 
 ### v1 — classic UI
 
-1. Download `OpenCodeAndroid-v4.0.2.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.2).
+1. Download `OpenCodeAndroid-v4.0.3.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3).
 2. Install it over an existing 4.0.x install to keep sessions, projects, runtime and root grant. The package id and signing key do not change.
 3. Open **OpenCode Android** and wait for the server.
 
@@ -113,8 +113,8 @@ sha256sum -c SHA256SUMS.txt
 On Windows PowerShell:
 
 ```powershell
-Get-FileHash .\OpenCodeAndroid-v5.0.0.apk -Algorithm SHA256
-Get-FileHash .\OpenCodeAndroid-v4.0.2.apk -Algorithm SHA256
+Get-FileHash .\OpenCodeAndroid-v5.0.1.apk -Algorithm SHA256
+Get-FileHash .\OpenCodeAndroid-v4.0.3.apk -Algorithm SHA256
 ```
 
 The v1 package id is `com.opencode.launcher.next`; the `.next` suffix is historical and kept so 4.x updates preserve existing data. The v2 package id is `com.opencode.android`.
@@ -180,7 +180,7 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 
 ## Updates
 
-- **opencode:** each edition checks its own line. v1 **bundles 1.19.4** and updates within 1.x (1.19.5 is already available); v2 **bundles 2.2.0** and updates within 2.x (2.2.2 is already available). Tap the notification to download the official `opencode-linux-arm64-musl` release, verify its checksum, and install it in place. The server restarts on the new binary; if it does not answer, the app rolls back to the bundled runtime.
+- **opencode:** each edition checks its own line. v1 **bundles 1.19.4** and updates within 1.x; v2 **bundles 2.2.0** and updates within 2.x. When a newer runtime is available, the app shows a notification; tap it to download the official `opencode-linux-arm64-musl` release, verify its checksum, and install it in place. The server restarts on the new binary; if it does not answer, the app rolls back to the bundled runtime.
 - **The app:** v1 checks 4.x releases and v2 checks 5.x releases. The APK downloads and installs through the system installer. Neither edition offers the other channel.
 
 ## How it works

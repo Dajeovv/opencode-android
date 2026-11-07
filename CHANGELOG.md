@@ -17,6 +17,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 - README and project docs now cover only the standalone 4.0.x app; the old
   setup guides were removed and the changelog starts at 4.0.0.
 
+## [5.0.1] - 2026-11-07
+
+Maintenance release for the 2.x edition (`com.opencode.android`, versionCode 175).
+
+### Added
+
+- opencode runtime update notifications in v2: the app follows the 2.x release branch, notifies when a newer runtime is available, and installs it from the notification.
+
+### Fixed
+
+- The post-update health check now uses `/api/info` with Basic auth, so a runtime that started correctly is no longer rolled back as "did not start".
+
+### Changed
+
+- Magisk 31.1+ manual root grant flow, including opening the root manager and rechecking the permission on return.
+
 ## [4.0.1] - 2026-10-26
 
 Maintenance release for the standalone app (versionCode 172).
