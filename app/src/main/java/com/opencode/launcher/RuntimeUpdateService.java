@@ -27,8 +27,10 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
@@ -286,10 +288,19 @@ public class RuntimeUpdateService extends Service {
     private String healthVersion() {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL("http://127.0.0.1:"
-                    + BuildConfig.SERVER_PORT + "/global/health").openConnection();
+            // v2: /global/health devuelve la SPA; la version vive en /api/info
+            // (Basic auth), el mismo endpoint que usa LocalRuntime al arrancar.
+            String url = "http://127.0.0.1:" + BuildConfig.SERVER_PORT
+                    + (BuildConfig.V2 ? "/api/info" : "/global/health");
+            c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout(1500);
             c.setReadTimeout(1500);
+            c.setUseCaches(false);
+            if (BuildConfig.V2) {
+                String raw = "opencode:" + LocalRuntime.serverPassword(this);
+                c.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
+                        .encodeToString(raw.getBytes(StandardCharsets.UTF_8)));
+            }
             try (BufferedReader r = new BufferedReader(
                     new InputStreamReader(c.getInputStream()))) {
                 StringBuilder sb = new StringBuilder();
