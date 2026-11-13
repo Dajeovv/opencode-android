@@ -17,6 +17,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 - README and project docs now cover only the standalone 4.0.x app; the old
   setup guides were removed and the changelog starts at 4.0.0.
 
+## [4.0.4] - 2026-11-12
+
+Maintenance release for the classic app (`com.opencode.launcher.next`, versionCode 176).
+
+### Fixed
+
+- **The model list reloads itself.** After a server restart the app could end
+  up showing no models until it was restarted by hand. It now recovers on its
+  own.
+- **The adb server keeps running between commands.** The connection to a
+  device used to be lost after every command.
+
 ## [4.0.3] - 2026-11-07
 
 Maintenance release for the classic app (`com.opencode.launcher.next`, versionCode 175).
