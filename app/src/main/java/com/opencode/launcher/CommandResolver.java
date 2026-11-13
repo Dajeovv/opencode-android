@@ -28,6 +28,7 @@ import java.util.regex.Pattern;
  *   oc-native-env.sh -> funciones que lanzan los ELF con el linker
  *   oc-shell         -> shell que usa el servidor (via trampolin del APK)
  *   oc-proot         -> ejecuta un comando dentro de proot
+ *   oc-adb           -> mantiene el servidor adb en un proot aparte y ejecuta el comando
  *
  * Asi no hay "if command == git" repartidos por el codigo: la politica vive
  * aqui y los scripts se regeneran en cada arranque.
@@ -38,6 +39,8 @@ public final class CommandResolver {
     public static final String SHELL_NAME = "oc-shell";
     public static final String PROOT_NAME = "oc-proot";
     public static final String NATIVE_ENV_NAME = "oc-native-env.sh";
+    public static final String ADB_NAME = "oc-adb";
+    public static final String ADB_SERVER_NAME = "oc-adb-server";
 
     private static final String LINKER = "/system/bin/linker64";
     private static final String[] SYSTEM_DIRS = {
@@ -49,7 +52,10 @@ public final class CommandResolver {
             "pkg", "apt", "apt-get", "apt-cache", "apt-key", "dpkg", "dpkg-deb",
             "dpkg-query", "dpkg-trigger", "termux-change-repo", "termux-setup-storage",
             "termux-reload-settings", "termux-services", "proot", "proot-distro",
-            "sshd", "service"
+            "sshd", "service",
+            // El cliente adb va dentro de proot para conservar el prefijo;
+            // oc-adb arranca antes su servidor fuera de proot.
+            "adb"
     };
 
     /**
@@ -118,6 +124,8 @@ public final class CommandResolver {
         write(new File(binDir, NATIVE_ENV_NAME), nativeEnv(scan.functions, libPath));
         File proot = new File(binDir, PROOT_NAME);
         write(proot, prootScript(home, nd, tmp, etc));
+        write(new File(binDir, ADB_SERVER_NAME), adbServerScript(binDir, home));
+        write(new File(binDir, ADB_NAME), adbScript(binDir, home));
         File shell = new File(binDir, SHELL_NAME);
         write(shell, shellScript(scan.prootNames));
         Log.i(TAG, "resolvedor listo: " + scan.functions.size() + " nativos, "
@@ -239,8 +247,17 @@ public final class CommandResolver {
     private static String shellScript(Set<String> prootNames) {
         StringBuilder cases = new StringBuilder();
         for (String cmd : prootNames) {
+            // adb tiene su propio envoltorio: el servidor debe vivir fuera
+            // de proot para sobrevivir entre comandos.
+            if ("adb".equals(cmd)) continue;
             if (cases.length() > 0) cases.append('|');
             cases.append(cmd);
+        }
+        StringBuilder prootCase = new StringBuilder();
+        if (cases.length() > 0) {
+            prootCase.append("    ").append(cases).append(")\n")
+                    .append("      exec /system/bin/sh \"$OWN/").append(PROOT_NAME)
+                    .append("\" \"$CMD\" ;;\n");
         }
         // El envoltorio se ejecuta con /system/bin/sh. No usa utilidades del
         // prefijo (dirname, printf, tr...) porque Android no las deja
@@ -274,8 +291,9 @@ public final class CommandResolver {
                 + "  W=${RAW#\\\"}; W=${W%\\\"}; W=${W#\\'}; W=${W%\\'}\n"
                 + "  W=${W#\\(}; W=${W%\\)}; W=${W%;}; W=${W%|}; W=${W%&}\n"
                 + "  case \"$W\" in\n"
-                + "    " + cases + ")\n"
-                + "      exec /system/bin/sh \"$OWN/" + PROOT_NAME + "\" \"$CMD\" ;;\n"
+                + "    adb|" + TERMUX_PREFIX + "/bin/adb|\"$APP_FILES/usr/bin/adb\")\n"
+                + "      exec /system/bin/sh \"$OWN/" + ADB_NAME + "\" \"$CMD\" ;;\n"
+                + prootCase
                 + "    " + TERMUX_PREFIX + "/*|*" + TERMUX_PREFIX + "/*|*\"$APP_FILES\"*)\n"
                 + "      exec /system/bin/sh \"$OWN/" + PROOT_NAME + "\" \"$CMD\" ;;\n"
                 + "  esac\n"
@@ -301,6 +319,60 @@ public final class CommandResolver {
                 + "RC=$?\n"
                 + "if [ $RC -eq 127 ]; then exec /system/bin/sh \"$OWN/" + PROOT_NAME + "\" \"$CMD\"; fi\n"
                 + "exit $RC\n";
+    }
+
+    /**
+     * Mantiene el servidor adb dentro de un proot permanente. Al no salir
+     * nunca, proot no aplica --kill-on-exit y el daemon sobrevive entre
+     * invocaciones. El cliente arranca este supervisor solo si hace falta.
+     */
+    private static String adbServerScript(File binDir, File home) {
+        return "#!/system/bin/sh\n"
+                + "# Generado por CommandResolver. No editar a mano.\n"
+                + "echo $$ > " + q(new File(home, ".adb-server.pid").getAbsolutePath()) + "\n"
+                + "exec /system/bin/sh " + q(new File(binDir, PROOT_NAME).getAbsolutePath())
+                + " \"adb nodaemon server\"\n";
+    }
+
+    /**
+     * Envoltorio de adb: asegura el supervisor externo y ejecuta el cliente
+     * dentro de proot. Asi la conexion se mantiene entre invocaciones.
+     */
+    private static String adbScript(File binDir, File home) {
+        String pidFile = new File(home, ".adb-server.pid").getAbsolutePath();
+        String logFile = new File(home, ".adb-server.log").getAbsolutePath();
+        String server = new File(binDir, ADB_SERVER_NAME).getAbsolutePath();
+        String proot = new File(binDir, PROOT_NAME).getAbsolutePath();
+        return "#!/system/bin/sh\n"
+                + "# Generado por CommandResolver. No editar a mano.\n"
+                + "# El cliente adb corre dentro de proot, pero el servidor vive en\n"
+                + "# un proot permanente aparte: asi el daemon sobrevive entre\n"
+                + "# invocaciones y la conexion no se pierde.\n"
+                + "CMD=\"${1:-adb}\"\n"
+                + "ADB=" + q(new File(binDir, "adb").getAbsolutePath()) + "\n"
+                + "PIDFILE=" + q(pidFile) + "\n"
+                + "if [ -x \"$ADB\" ]; then\n"
+                + "  PID=\"\"\n"
+                + "  if [ -f \"$PIDFILE\" ]; then PID=$(/system/bin/cat \"$PIDFILE\" 2>/dev/null); fi\n"
+                + "  case \"$PID\" in ''|*[!0-9]*) PID=\"\" ;; esac\n"
+                + "  if [ -z \"$PID\" ] || ! /system/bin/kill -0 \"$PID\" 2>/dev/null; then\n"
+                + "    /system/bin/rm -f \"$PIDFILE\"\n"
+                + "    if [ -x " + q("/system/bin/setsid") + " ]; then\n"
+                + "      ( /system/bin/setsid /system/bin/sh " + q(server)
+                + " </dev/null >" + q(logFile) + " 2>&1 & )\n"
+                + "    else\n"
+                + "      ( /system/bin/sh " + q(server)
+                + " </dev/null >" + q(logFile) + " 2>&1 & )\n"
+                + "    fi\n"
+                + "    i=0\n"
+                + "    while [ $i -lt 20 ]; do\n"
+                + "      /system/bin/ss -ltn 2>/dev/null | /system/bin/grep -q \"127.0.0.1:5037\" && break\n"
+                + "      sleep 0.1\n"
+                + "      i=$((i+1))\n"
+                + "    done\n"
+                + "  fi\n"
+                + "fi\n"
+                + "exec /system/bin/sh " + q(proot) + " \"$CMD\"\n";
     }
 
     private static String prootScript(File home, File nd, File tmp, File etc) {

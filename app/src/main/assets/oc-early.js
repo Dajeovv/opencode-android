@@ -427,10 +427,7 @@
     return inflight[key];
   }
 
-  window.fetch = function (input, init) {
-    var u = parseUrl(input);
-    if (!u || u.origin !== location.origin) return nativeFetch(input, init);
-
+  function doFetch(u, input, init) {
     var method = (init && init.method) || (input && input.method) || 'GET';
     if (isMutation(u, method)) {
       clearCache();
@@ -459,6 +456,68 @@
       return fetchProvider(u, input, init, 'global');
     }
     return nativeFetch(input, init);
+  }
+
+  /*
+   * OpenCode v1 (1.19.x) arrastra un bug conocido: si la primera peticion de
+   * un directorio se cancela mientras la instancia de ese directorio arranca,
+   * el directorio queda envenenado y todas sus peticiones posteriores
+   * responden 499 con cuerpo vacio (/provider incluido, asi que la UI se
+   * queda sin modelos) hasta que se libera la instancia.
+   * Upstream: anomalyco/opencode#58942. El remedio publicado es
+   *     POST /instance/dispose?directory=<dir>
+   * Aqui se hace solo: al ver un 499 se libera la instancia y se reintenta la
+   * peticion. Sin esto solo se arregla reiniciando la app a mano.
+   */
+  var repairing = Object.create(null);
+
+  function sleep(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  function homeDir() {
+    try {
+      if (window.ocConfig && ocConfig.homeDir) return ocConfig.homeDir() || '';
+    } catch (e) {}
+    return '';
+  }
+
+  function disposeInstance(dir) {
+    if (!dir) return Promise.resolve();
+    if (repairing[dir]) return repairing[dir];
+    dbg('dispose instance ' + dir);
+    var p = nativeFetch('/instance/dispose?directory=' + encodeURIComponent(dir), { method: 'POST' })
+      .catch(function () {})
+      .then(function () { return sleep(600); });
+    repairing[dir] = p;
+    p.then(function () { if (repairing[dir] === p) delete repairing[dir]; });
+    return p;
+  }
+
+  function fetchWithRepair(u, input, init, dir, attempt) {
+    return doFetch(u, input, init).then(function (r) {
+      if (!r || r.status !== 499) return r;
+      if (attempt >= 2) {
+        dbg('499 persiste en ' + u.pathname);
+        return r;
+      }
+      var target = dir || homeDir();
+      dbg('499 en ' + u.pathname + ': libero instancia ' + target);
+      return disposeInstance(target).then(function () {
+        return fetchWithRepair(u, input, init, dir, attempt + 1);
+      });
+    });
+  }
+
+  window.fetch = function (input, init) {
+    var u = parseUrl(input);
+    if (!u || u.origin !== location.origin) return nativeFetch(input, init);
+
+    var method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    // Solo GET/HEAD: reintentar una mutacion podria aplicarla dos veces.
+    if (method !== 'GET' && method !== 'HEAD') return doFetch(u, input, init);
+
+    return fetchWithRepair(u, input, init, dirFromUrl(u), 0);
   };
 
   dbg('loaded');
