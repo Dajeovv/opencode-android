@@ -17,6 +17,29 @@ adheres to [Semantic Versioning](https://semver.org/).
 - README and project docs now cover only the standalone 4.0.x app; the old
   setup guides were removed and the changelog starts at 4.0.0.
 
+## [5.0.2] - 2026-11-12
+
+Maintenance release for the 2.x edition (`com.opencode.android`, versionCode 176).
+
+### Fixed
+
+- **The app opens faster and feels smoother.** The screen used to flicker
+  while it started; now it loads in one go.
+- **Deleting a session works.** The confirmation window used to close on its
+  own without deleting anything.
+- **The update notice shows up again.** The check against GitHub could fail
+  without a trace, and the app then reported that there was no update. It now
+  retries and falls back to another source, so a real update is no longer
+  missed.
+- **QR codes can be scanned.** The "Scan QR code" button of the server panel
+  did nothing, because the app never asked for camera access. It now asks for
+  it when the button is pressed and hands the camera over to the page.
+
+### Changed
+
+- The app keeps the files it needs on the device, so the second start is
+  noticeably quicker.
+
 ## [5.0.1] - 2026-11-07
 
 Maintenance release for the 2.x edition (`com.opencode.android`, versionCode 175).
