@@ -154,6 +154,11 @@ public class RuntimeUpdateService extends Service {
             ServerWatch.notifyId(this, ServerWatch.NID_OC,
                     ServerWatch.t(this, "OpenCode actualizado", "OpenCode updated"),
                     active + " -> " + asset.version);
+            // Avisa a la app abierta: el runtime se ha reiniciado con la
+            // version nueva, asi que la pagina que estaba cargada se ha
+            // quedado con la sesion de la anterior. Sin este aviso habia
+            // que reiniciar la app a mano para que volviera a funcionar.
+            notifyRuntimeRestarted(asset.version);
         } finally {
             deleteRecursive(cache);
         }
@@ -312,6 +317,26 @@ public class RuntimeUpdateService extends Service {
             return "";
         } finally {
             if (c != null) c.disconnect();
+        }
+    }
+
+    /** Aviso de que el runtime se ha reiniciado con una version nueva.
+     *
+     *  Lo escucha MainActivity para recargar la pagina: el servidor se ha
+     *  reiniciado, asi que la sesion que tenia la pagina web ya no vale y
+     *  sin recargarla se queda en blanco o con errores hasta que el usuario
+     *  reinicia la app a mano. */
+    public static final String ACTION_RUNTIME_RESTARTED =
+            "com.opencode.launcher.RUNTIME_RESTARTED";
+    public static final String EXTRA_RESTARTED_VERSION = "restarted_version";
+
+    private void notifyRuntimeRestarted(String version) {
+        try {
+            Intent i = new Intent(ACTION_RUNTIME_RESTARTED)
+                    .setPackage(getPackageName())
+                    .putExtra(EXTRA_RESTARTED_VERSION, version);
+            sendBroadcast(i);
+        } catch (Exception ignored) {
         }
     }
 

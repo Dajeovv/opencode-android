@@ -34,6 +34,9 @@ Maintenance release for the 2.x edition (`com.opencode.android`, versionCode 176
 - **QR codes can be scanned.** The "Scan QR code" button of the server panel
   did nothing, because the app never asked for camera access. It now asks for
   it when the button is pressed and hands the camera over to the page.
+- **Files can be downloaded again.** When the agent creates a file, the
+  download button did nothing at all: the page builds the file in memory and
+  the app never picked it up. The file now lands in the Downloads folder.
 
 ### Changed
 

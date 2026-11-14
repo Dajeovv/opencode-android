@@ -247,6 +247,8 @@ public class MainActivity extends AppCompatActivity {
      *  sobre el permiso de Android. */
     private PermissionRequest pendingCameraRequest;
     private ActivityResultLauncher<String> cameraPermLauncher;
+    /** Receptor del aviso de reinicio del runtime (para recargar la pagina). */
+    private android.content.BroadcastReceiver runtimeRestartReceiver = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -458,6 +460,13 @@ public class MainActivity extends AppCompatActivity {
         web.addJavascriptInterface(new NotifBridge(), "ocNotify");
         // El interruptor de permisos de la web (Settings > General) manda al nuestro global.
         web.addJavascriptInterface(new ConfigBridge(), "ocConfig");
+        // Descargas: la web crea un blob: y pulsa un <a download>. El
+        // WebView no puede guardar eso, asi que el shim lo lee y lo pasa
+        // por aqui.
+        web.addJavascriptInterface(new DownloadBridge(), "ocDownload");
+        // Descargas: la web crea un blob: y pulsa un <a download>. El
+        // WebView no puede guardar eso, asi que el shim lo lee y lo pasa
+        // por aqui.
         // Depuracion remota del WebView solo en APK debuggable (nunca en release).
         if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             WebView.setWebContentsDebuggingEnabled(true);
@@ -756,6 +765,9 @@ public class MainActivity extends AppCompatActivity {
                     } catch (Exception ignored) {
                     }
                 });
+        // Aviso de reinicio del runtime: recarga la pagina sin reiniciar
+        // la app a mano.
+        registerRuntimeRestartReceiver();
         storagePermLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(), granted -> {
                     // Concedido: Descargas publicas. Denegado: se comparte
@@ -2005,6 +2017,26 @@ public class MainActivity extends AppCompatActivity {
             final String t = (title == null || title.isEmpty()) ? "opencode" : title;
             final String b = body == null ? "" : body;
             runOnUiThread(() -> notifyAgentDone(t, b));
+        }
+    }
+
+    /** Puente de descargas.
+     *
+     *  La web no descarga nada por su cuenta: crea un "blob:" en memoria y
+     *  pulsa un <a download>. El WebView no puede guardar un blob:, asi que
+     *  el shim de la pagina lo lee y lo pasa aqui como base64.
+     *
+     *  Es la unica forma de que el fichero llegue al movil: el gestor de
+     *  descargas del sistema no sabe leer un blob: generado en la pagina. */
+    private class DownloadBridge {
+        @JavascriptInterface
+        public void save(String name, String base64, String mime) {
+            final String n = name == null ? "" : name;
+            final String b = base64 == null ? "" : base64;
+            final String mt = mime == null ? "" : mime;
+            if (n.isEmpty() || b.isEmpty()) return;
+            // En un hilo aparte: el base64 puede ser grande.
+            new Thread(() -> writeDownloadedFile(n, b, mt), "web-download").start();
         }
     }
 
@@ -4090,6 +4122,53 @@ private void refreshAppUpdateBtn() {
         }).start();
     }
 
+    /** Avisa de que el runtime se ha reiniciado con una version nueva.
+     *
+     *  El servicio de actualizacion reinicia el servidor, asi que la pagina
+     *  que estaba cargada se queda con la sesion de la version anterior y
+     *  hay que reiniciar la app a mano. Con este aviso la pagina se recarga
+     *  sola. */
+    private void registerRuntimeRestartReceiver() {
+        try {
+            android.content.BroadcastReceiver rc = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(android.content.Context ctx, Intent intent) {
+                    if (intent == null) return;
+                    String v = intent.getStringExtra(RuntimeUpdateService.EXTRA_RESTARTED_VERSION);
+                    onRuntimeRestarted(v);
+                }
+            };
+            ContextCompat.registerReceiver(this, rc,
+                    new IntentFilter(RuntimeUpdateService.ACTION_RUNTIME_RESTARTED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED);
+            runtimeRestartReceiver = rc;
+        } catch (Exception e) {
+            Log.d("OpenCode", "receptor de reinicio fallo: " + e);
+        }
+    }
+
+    /** El runtime se reinicio con una version nueva: el servidor ha vuelto
+     *  pero la pagina que estaba cargada usa la sesion de la anterior, asi
+     *  que se recarga. */
+    private void onRuntimeRestarted(String version) {
+        runOnUiThread(() -> {
+            try {
+                snack(T("OpenCode actualizado a ", "OpenCode updated to ")
+                        + (version == null ? "" : version)
+                        + T(". Recargando...", ". Reloading..."));
+                // El servidor acaba de arrancar: se espera a que responda
+                // antes de recargar, si no la pagina sale a medias.
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    if (isFinishing()) return;
+                    String url = web.getUrl();
+                    webLoad(url != null ? url : URL);
+                }, 1500);
+            } catch (Exception e) {
+                Log.d("OpenCode", "recarga tras reinicio fallo: " + e);
+            }
+        });
+    }
+
     /** Abre el permiso 'instalar apps desconocidas'. En algunos moviles la
      *  pantalla directa no existe: entonces abre los detalles de la app
      *  (ahi esta el mismo interruptor). Nunca falla en silencio. */
@@ -4794,6 +4873,13 @@ private void refreshAppUpdateBtn() {
     @Override
     protected void onDestroy() {
         stopProgressPoll();
+        try {
+            if (runtimeRestartReceiver != null) {
+                unregisterReceiver(runtimeRestartReceiver);
+                runtimeRestartReceiver = null;
+            }
+        } catch (Exception ignored) {
+        }
         super.onDestroy();
     }
 
@@ -4829,6 +4915,218 @@ private void refreshAppUpdateBtn() {
                     v -> Log.d("OpenCode", "menu-select: " + v));
         } catch (Exception e) {
             Log.d("OpenCode", "menu-select fallo: " + e.getMessage());
+        }
+    }
+
+    /** Escribe un fichero descargado desde la web (llega en base64). */
+    private void writeDownloadedFile(String name, String base64, String mime) {
+        try {
+            byte[] data = android.util.Base64.decode(base64, android.util.Base64.DEFAULT);
+            // Se guarda en Descargas/opencode si hay acceso al almacenamiento;
+            // si no, en la carpeta externa privada de la app (el agente corre
+            // con el mismo UID y la lee igual). Es el mismo criterio que
+            // usa shareDir() para los ficheros que comparte el agente.
+            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), "opencode");
+            if (!hasShareStorage() || !(dir.isDirectory() || dir.mkdirs())) {
+                File base = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                if (base == null) base = getFilesDir();
+                dir = new File(base, "opencode");
+                dir.mkdirs();
+            }
+            String safe = name.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+            if (safe.isEmpty()) safe = "opencode-download";
+            if (safe.length() > 120) safe = safe.substring(safe.length() - 120);
+            File out = new File(dir, safe);
+            // Si ya existe, se añade un numero para no pisarlo.
+            if (out.exists()) {
+                String base = safe.contains(".") ? safe.substring(0, safe.lastIndexOf('.'))
+                        : safe;
+                String ext = safe.contains(".") ? safe.substring(safe.lastIndexOf('.')) : "";
+                for (int i = 1; i < 100; i++) {
+                    File alt = new File(dir, base + " (" + i + ")" + ext);
+                    if (!alt.exists()) {
+                        out = alt;
+                        break;
+                    }
+                }
+            }
+            try (java.io.FileOutputStream fo = new java.io.FileOutputStream(out)) {
+                fo.write(data);
+                fo.flush();
+            }
+            final String saved = out.getAbsolutePath();
+            final String savedName = out.getName();
+            final long size = out.length();
+            runOnUiThread(() -> {
+                snack(T("Descargado: ", "Downloaded: ") + savedName
+                        + T(" (", " (") + (size / 1024) + " KB)");
+                log("Descarga guardada: " + saved);
+            });
+        } catch (Exception e) {
+            Log.d("OpenCode", "no se pudo guardar la descarga: " + e);
+            runOnUiThread(() -> snack(T("No se pudo guardar el fichero",
+                    "Could not save the file")));
+        }
+    }
+
+    /** Descarga un fichero desde la web de opencode.
+     *
+     *  El WebView no guarda los ficheros por si mismo: hay que hacerlo a
+     *  mano. El servidor local pide Basic auth, asi que la peticion lleva
+     *  la cabecera de autorizacion; si no, el servidor responde 401 y el
+     *  fichero sale vacio o con un error.
+     *
+     *  Se usa DownloadManager para que el sistema haga la descarga (sigue
+     *  en segundo plano, se puede cancelar y avisa al terminar). */
+    private void startWebDownload(String url, String userAgent, String contentDisposition,
+            String mimetype, long contentLength) {
+        if (url == null || url.isEmpty()) {
+            snack(T("Descarga sin dirección", "Download without address"));
+            return;
+        }
+        try {
+            Uri u = Uri.parse(url);
+            String scheme = u.getScheme();
+            boolean local = "http".equalsIgnoreCase(scheme)
+                    && ("127.0.0.1".equals(u.getHost()) || "localhost".equalsIgnoreCase(u.getHost()));
+            if (!local && !"https".equalsIgnoreCase(scheme)) {
+                snack(T("Solo se admiten descargas http", "Only http downloads are supported"));
+                return;
+            }
+            // El nombre del fichero: lo que dice la cabecera o, si no, la
+            // ultima parte de la ruta.
+            String name = urlFileName(url, contentDisposition);
+            // La cabecera de autorizacion solo tiene sentido para el
+            // servidor local: fuera seria mandar la clave del agente a un
+            // sitio cualquiera.
+            Map<String, String> headers = new HashMap<>();
+            if (local) {
+                headers.put("Authorization", basicAuth());
+                if (userAgent != null && !userAgent.isEmpty()) {
+                    headers.put("User-Agent", userAgent);
+                }
+            }
+            // En el servidor local el token va en la propia URL.
+            String full = local ? withAuthToken(url) : url;
+
+            android.app.DownloadManager.Request req =
+                    new android.app.DownloadManager.Request(Uri.parse(full));
+            req.setTitle(name);
+            req.setDescription(T("Descargando del agente", "Downloading from the agent"));
+            req.setNotificationVisibility(
+                    android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setMimeType(mimetype);
+            req.setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS, "opencode/" + name);
+            for (Map.Entry<String, String> e : headers.entrySet()) {
+                req.addRequestHeader(e.getKey(), e.getValue());
+            }
+            android.app.DownloadManager dm =
+                    (android.app.DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm == null) {
+                snack(T("No hay servicio de descargas", "No download service available"));
+                return;
+            }
+            long id = dm.enqueue(req);
+            snack(T("Descargando ", "Downloading ") + name
+                    + T("…", "…"));
+            log("Descarga: " + name + " <- " + (local ? "servidor local" : "web"));
+            // Se avisa al terminar, para saber si salio bien.
+            watchDownload(id, name);
+        } catch (Exception e) {
+            Log.d("OpenCode", "descarga fallo: " + e);
+            snack(T("No se pudo descargar: ", "Could not download: ") + e.getMessage());
+        }
+    }
+
+    /** Nombre del fichero de una descarga. */
+    private String urlFileName(String url, String contentDisposition) {
+        String name = "";
+        try {
+            if (contentDisposition != null) {
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("filename\\*?=(?:UTF-8'')?\"?([^\";]+)\"?")
+                        .matcher(contentDisposition);
+                if (m.find()) name = m.group(1);
+            }
+            if (name.isEmpty()) {
+                String path = Uri.parse(url).getPath();
+                if (path != null) {
+                    int i = path.lastIndexOf('/');
+                    name = i >= 0 ? path.substring(i + 1) : path;
+                }
+            }
+            name = Uri.decode(name == null ? "" : name);
+        } catch (Exception ignored) {
+        }
+        name = name.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+        if (name.isEmpty()) name = "opencode-download";
+        if (name.length() > 120) name = name.substring(name.length() - 120);
+        return name;
+    }
+
+    /** Avisa cuando termina la descarga (o si falla). */
+    private void watchDownload(long id, String name) {
+        new Thread(() -> {
+            android.app.DownloadManager dm =
+                    (android.app.DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm == null) return;
+            try {
+                for (int i = 0; i < 300; i++) {
+                    Thread.sleep(1000);
+                    android.app.DownloadManager.Query q =
+                            new android.app.DownloadManager.Query().setFilterById(id);
+                    android.database.Cursor c = dm.query(q);
+                    if (c == null || !c.moveToFirst()) continue;
+                    int status = c.getInt(c.getColumnIndexOrThrow(
+                            android.app.DownloadManager.COLUMN_STATUS));
+                    if (status == android.app.DownloadManager.STATUS_SUCCESSFUL) {
+                        final String msg = T("Descargado: ", "Downloaded: ") + name
+                                + T(" (Descargas/opencode)", " (Downloads/opencode)");
+                        runOnUiThread(() -> snack(msg));
+                        log("Descarga terminada: " + name);
+                        c.close();
+                        return;
+                    }
+                    if (status == android.app.DownloadManager.STATUS_FAILED) {
+                        final String reason = downloadFailureReason(
+                                c.getInt(c.getColumnIndexOrThrow(
+                                        android.app.DownloadManager.COLUMN_REASON)));
+                        runOnUiThread(() -> snack(T("Falló la descarga: ", "Download failed: ")
+                                + reason));
+                        log("Descarga fallida: " + name + " (" + reason + ")");
+                        c.close();
+                        return;
+                    }
+                    c.close();
+                }
+            } catch (Exception ignored) {
+            }
+        }, "watch-download").start();
+    }
+
+    /** Traduce el motivo de fallo de DownloadManager. */
+    private String downloadFailureReason(int reason) {
+        switch (reason) {
+            case android.app.DownloadManager.ERROR_CANNOT_RESUME:
+                return T("no se pudo reanudar", "could not resume");
+            case android.app.DownloadManager.ERROR_DEVICE_NOT_FOUND:
+                return T("no hay almacenamiento", "no storage available");
+            case android.app.DownloadManager.ERROR_FILE_ALREADY_EXISTS:
+                return T("el fichero ya existe", "the file already exists");
+            case android.app.DownloadManager.ERROR_FILE_ERROR:
+                return T("error de fichero", "file error");
+            case android.app.DownloadManager.ERROR_HTTP_DATA_ERROR:
+                return T("error de datos", "data error");
+            case android.app.DownloadManager.ERROR_INSUFFICIENT_SPACE:
+                return T("no hay espacio", "not enough space");
+            case android.app.DownloadManager.ERROR_TOO_MANY_REDIRECTS:
+                return T("demasiadas redirecciones", "too many redirects");
+            case android.app.DownloadManager.ERROR_UNHANDLED_HTTP_CODE:
+                return T("el servidor rechazo la peticion", "the server rejected the request");
+            default:
+                return String.valueOf(reason);
         }
     }
 
