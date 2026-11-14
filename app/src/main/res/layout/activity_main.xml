@@ -212,6 +212,29 @@
         app:fabSize="mini"
         app:srcCompat="@android:drawable/ic_menu_manage" />
 
+    <!-- Aviso de estado del launcher: cartel propio, oscuro y con fundido
+         (el Snackbar de Material3 sale claro en modo oscuro y se desliza
+         desde abajo, se ve cortado mientras entra).
+         El ancho lo decide fitChipWidth() en MainActivity: con wrap_content
+         un texto largo se mide en una sola linea y el recuadro se estira
+         hasta el borde derecho, con la segunda linea pegada a la izquierda
+         (asimétrico). Alli se mide el texto y se parte a mano. -->
+    <TextView
+        android:id="@+id/txtStatusChip"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="16dp"
+        android:background="@drawable/snack_style_a"
+        android:elevation="8dp"
+        android:gravity="center"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="9dp"
+        android:textColor="@color/splash_text"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
     <FrameLayout
         android:id="@+id/splash"
         android:layout_width="match_parent"

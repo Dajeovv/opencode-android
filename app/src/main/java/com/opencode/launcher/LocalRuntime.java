@@ -541,9 +541,16 @@ public final class LocalRuntime {
     }
 
     /**
-     * Crea el repositorio git de home antes de arrancar el servidor. Sin repo,
-     * upstream resuelve el worktree como "/" y el watcher recorre todo el
-     * sistema de archivos (el bloqueo de ~5 s al abrir una sesion).
+     * Crea el repositorio git de home antes de arrancar el servidor.
+     *
+     * Medido en opencode 2.2.x (nov 2026): sin repo, el runtime no resuelve
+     * worktree y el watcher se queda en el directorio de la sesion; con repo
+     * el watcher sube por la cadena de padres hasta "/". El arranque del
+     * servicio por directorio sale algo mas rapido sin repo (426 ms frente a
+     * 500-970 ms), pero ese arranque ocurre al abrir la app, no al enviar un
+     * mensaje, y el hueco visible al enviar NO mejora (medido: 1,05 s sin repo
+     * frente a 0,57 s con repo). Sin repo se pierden ademas el diff y el
+     * undo de ficheros de las sesiones del home. El repo se queda.
      */
     private static void ensureGitRepo(File home, File nd, File prefix,
             Map<String, String> env) {

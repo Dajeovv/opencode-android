@@ -29,6 +29,7 @@ import android.view.animation.OvershootInterpolator;
 import android.webkit.HttpAuthHandler;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -146,6 +147,8 @@ public class MainActivity extends AppCompatActivity {
     private FloatingActionButton fabControls;
     private int fabRestoreTries = 0;
     private View splash;
+    private android.widget.TextView txtStatusChip;
+    private final Handler chipHandler = new Handler(Looper.getMainLooper());
     private TextView splashStatus;
     private MaterialButton splashRetry;
     private Runnable pendingRetry;
@@ -159,8 +162,6 @@ public class MainActivity extends AppCompatActivity {
     /** Padding base del contenido: 0 en chat, 16dp en el panel. */
     private int chatPad = 0;
     private boolean urlLoading = false;
-    /** Generacion de carga del documento v2: una nueva anula la anterior. */
-    private int webLoadGen = 0;
     private boolean advancedOpen = false;
     private boolean serverOpen = false;
     /** Modo sin root: true hasta que la comprobacion de arranque diga lo contrario. */
@@ -242,6 +243,10 @@ public class MainActivity extends AppCompatActivity {
     private final StringBuilder updDbg = new StringBuilder();
     private ValueCallback<Uri[]> filePathCallback;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
+    /** Peticion de camara de la web a la espera de que el usuario decida
+     *  sobre el permiso de Android. */
+    private PermissionRequest pendingCameraRequest;
+    private ActivityResultLauncher<String> cameraPermLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -335,6 +340,7 @@ public class MainActivity extends AppCompatActivity {
         // Tapa el arranque (servidor frio, primera pintura del WebView) para
         // que no se vea el salto brusco del panel al chat.
         splash = findViewById(R.id.splash);
+        txtStatusChip = findViewById(R.id.txtStatusChip);
         splashStatus = findViewById(R.id.splashStatus);
         splashRetry = findViewById(R.id.splashRetry);
         splashRetry.setOnClickListener(v -> retryStartupNow());
@@ -436,10 +442,18 @@ public class MainActivity extends AppCompatActivity {
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        // Servimos desde localhost: la cache no ahorra nada y una entrada a
-        // medias dejaba la pagina en negro. Red siempre + purga unica.
-        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        web.clearCache(true);
+        if (BuildConfig.V2) {
+            // El servidor sirve los bundles con max-age=31536000,immutable:
+            // con la cache activa la UI no los vuelve a bajar por el socket
+            // local en cada carga (arranque en frio, recargas, rutas nuevas).
+            // Las respuestas de /api no traen validadores, asi que no se cachean.
+            s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        } else {
+            // v1: la cache no ahorra nada (el HTML lo sirve el launcher) y una
+            // entrada a medias dejaba la pagina en negro. Red siempre + purga.
+            s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+            web.clearCache(true);
+        }
         // Avisos del agente: la web cree que crea Notification; el puente avisa a Android.
         web.addJavascriptInterface(new NotifBridge(), "ocNotify");
         // El interruptor de permisos de la web (Settings > General) manda al nuestro global.
@@ -466,13 +480,22 @@ public class MainActivity extends AppCompatActivity {
                         // v2: la UI no trae shims de v1, pero si necesita el
                         // viewport bloqueado para que el pellizco no haga zoom.
                         if ("/sw.js".equals(path)) {
-                            // Sin fetch handler: el service worker de v2 cachea
-                            // el HTML sin el viewport bloqueado. Uno vacio deja
-                            // pasar todo por shouldInterceptRequest.
-                            byte[] js = ("self.addEventListener('install',function(e){self.skipWaiting()});"
-                                    + "self.addEventListener('activate',function(e){"
-                                    + "e.waitUntil(self.clients.claim())});")
-                                    .getBytes(StandardCharsets.UTF_8);
+                            // La UI registra un service worker real que cachea
+                            // el HTML del servidor (sin el viewport bloqueado)
+                            // y, al controlar la pagina, se traga las
+                            // peticiones: el launcher dejaria de servir su
+                            // HTML y la pagina se queda a medias. En el
+                            // launcher ese worker no debe existir.
+                            // (Ademas la peticion de su script salta la
+                            // interceptacion del launcher, asi que el shim
+                            // tambien bloquea el registro desde la pagina.)
+                            Map<String, String> h = new HashMap<>();
+                            h.put("Cache-Control", "no-store");
+                            return new WebResourceResponse("text/plain", "utf-8",
+                                    404, "Not Found", h, new ByteArrayInputStream(new byte[0]));
+                        }
+                        if ("/oc-v2.js".equals(path)) {
+                            byte[] js = v2Shim().getBytes(StandardCharsets.UTF_8);
                             Map<String, String> h = new HashMap<>();
                             h.put("Cache-Control", "no-store");
                             return new WebResourceResponse("application/javascript", "utf-8",
@@ -495,7 +518,7 @@ public class MainActivity extends AppCompatActivity {
                         String q = u.getEncodedQuery();
                         IndexDoc doc = fetchIndexDoc(path + (q == null ? "" : "?" + q));
                         if (doc == null) return null;
-                        return htmlResponse(lockViewport(doc.html, doc.csp), doc.csp);
+                        return htmlResponse(injectV2Shim(lockViewport(doc.html, doc.csp)), doc.csp);
                     }
                     if ("/oc-early.js".equals(path)) {
                         byte[] js = earlyScript().getBytes(StandardCharsets.UTF_8);
@@ -525,13 +548,21 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
-                if (BuildConfig.V2 && url != null && url.startsWith(URL)
-                        && !url.contains("auth_token=")) {
-                    // Un reload de la web pierde el token y el service worker
-                    // sirve el HTML original (sin viewport bloqueado). Se
-                    // recarga con token y el documento de memoria.
-                    view.stopLoading();
-                    webLoad(url);
+                if (BuildConfig.V2) {
+                    v2DocReady = false;
+                    v2SwClean = false;
+                    // El token de la URL se conserva con el shim: se instala
+                    // aqui para que la pagina ya lo tenga antes de navegar.
+                    installV2TokenShim();
+                    if (url != null && url.startsWith(URL)
+                            && !url.contains("auth_token=")) {
+                        // Red de seguridad: la UI borra el token de la URL y
+                        // podria navegar sin el. El shim lo conserva en cada
+                        // cambio de historial, asi que esto casi nunca se da;
+                        // si se da, se repite la carga con token.
+                        view.stopLoading();
+                        webLoad(url);
+                    }
                 }
             }
 
@@ -540,9 +571,22 @@ public class MainActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 urlLoading = false;
                 if (BuildConfig.V2) {
-                    ensureV2Doc(url);
-                    watchUiReady();
-                    bridgeNotifications();
+                    // El WebView tambien avisa de onPageFinished en cada salto
+                    // interno de la SPA (pushState). Los shims se instalan una
+                    // sola vez por documento: repetirlos en cada navegacion
+                    // era parte de los tirones al escribir y al enviar.
+                    if (!v2SwClean) {
+                        v2SwClean = true;
+                        clearV2ServiceWorkers();
+                    }
+                    if (!v2DocReady) {
+                        v2DocReady = true;
+                        ensureV2Doc(url);
+                        installV2TokenShim();
+                        watchUiReady();
+                        bridgeNotifications();
+                        shimMenuSelect();
+                    }
                     return;
                 }
                 watchUiReady();
@@ -618,7 +662,18 @@ public class MainActivity extends AppCompatActivity {
                 boolean local = "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host);
                 boolean httpOk = "http".equalsIgnoreCase(u.getScheme())
                         && (u.getPort() == PORT || u.getPort() == -1);
-                if (local && httpOk) return false;
+                if (local && httpOk) {
+                    if (BuildConfig.V2 && u.getQueryParameter("auth_token") == null) {
+                        // La UI borra el token de la URL al arrancar. Si luego
+                        // navega, el servidor la rechazaria. El shim lo conserva
+                        // en cada cambio de historial, asi que esto es la red
+                        // de seguridad: se redirige a la URL con token en vez
+                        // de dejar una carga sin credencial.
+                        webLoad(withAuthToken(u.toString()));
+                        return true;
+                    }
+                    return false;
+                }
                 Uri target = u;
                 try {
                     android.util.Log.d("OpenCode", "ext-url: " + u);
@@ -681,6 +736,24 @@ public class MainActivity extends AppCompatActivity {
                     // salto a Ajustes para el permiso de archivos.
                     if (LocalRuntime.available(this) && !hasAllFilesAccess()) {
                         askAllFilesAccess();
+                    }
+                });
+        cameraPermLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestPermission(), granted -> {
+                    PermissionRequest req = pendingCameraRequest;
+                    pendingCameraRequest = null;
+                    if (req == null) return;
+                    try {
+                        if (granted) {
+                            req.grant(req.getResources());
+                            log(T("Camara permitida: se puede escanear un codigo QR",
+                                    "Camera allowed: QR codes can be scanned"));
+                        } else {
+                            req.deny();
+                            log(T("Camara denegada: no se puede escanear un codigo QR",
+                                    "Camera denied: QR codes cannot be scanned"));
+                        }
+                    } catch (Exception ignored) {
                     }
                 });
         storagePermLauncher = registerForActivityResult(
@@ -768,6 +841,47 @@ public class MainActivity extends AppCompatActivity {
                     return false;
                 }
                 return true;
+            }
+
+            /** La web puede pedir la camara (escanear un codigo QR para
+             *  emparejar un servidor remoto).
+             *
+             *  Sin esto el WebView deniega la peticion en silencio y el
+             *  boton "Scan QR code" no hace nada. Aqui se concede solo lo
+             *  que la app tenga permitido: si falta el permiso de camara se
+             *  pide a Android y se responde cuando conteste. */
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                try {
+                    boolean wantsCamera = false;
+                    for (String res : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)) {
+                            wantsCamera = true;
+                            break;
+                        }
+                    }
+                    if (!wantsCamera) {
+                        request.deny();
+                        return;
+                    }
+                    if (hasCameraPermission()) {
+                        request.grant(request.getResources());
+                        return;
+                    }
+                    // Se pide a Android y se guarda la peticion para
+                    // responder cuando el usuario decida.
+                    pendingCameraRequest = request;
+                    // Aviso: el boton de la web no muestra nada y puede
+                    // parecer que no funciona.
+                    snack(T("Se necesita la camara para escanear el codigo QR",
+                            "Camera access is needed to scan the QR code"));
+                    cameraPermLauncher.launch(android.Manifest.permission.CAMERA);
+                } catch (Exception e) {
+                    try {
+                        request.deny();
+                    } catch (Exception ignored) {
+                    }
+                }
             }
         });
 
@@ -2414,56 +2528,116 @@ public class MainActivity extends AppCompatActivity {
     /** Carga con Basic auth para el servidor local (la UI v2 la exige). */
     private void webLoad(String url) {
         String full = withAuthToken(url);
-        if (BuildConfig.V2) {
-            // v2 registra un service worker que cachea el HTML original. Si
-            // sirviera la pagina, el viewport bloqueado no llegaria nunca.
-            // Cargando el documento desde memoria con la URL base, el HTML
-            // es siempre el nuestro y la SPA conserva origen y rutas.
-            final int gen = ++webLoadGen;
-            new Thread(() -> {
-                Uri u = Uri.parse(full);
-                String path = u.getPath();
-                if (path == null || path.isEmpty()) path = "/";
-                String q = u.getEncodedQuery();
-                final IndexDoc doc = fetchIndexDoc(path + (q == null ? "" : "?" + q));
-                runOnUiThread(() -> {
-                    if (gen != webLoadGen || isFinishing()) return;
-                    if (doc != null) {
-                        web.loadDataWithBaseURL(full, lockViewport(doc.html, doc.csp),
-                                "text/html", "utf-8", null);
-                    } else {
-                        Map<String, String> headers = new HashMap<>();
-                        headers.put("Authorization", basicAuth());
-                        web.loadUrl(full, headers);
-                    }
-                });
-            }, "v2-doc").start();
-            return;
-        }
         Map<String, String> headers = new HashMap<>();
         headers.put("Authorization", basicAuth());
+        if (BuildConfig.V2) {
+            // La pagina se carga por HTTP y no desde memoria: asi el documento
+            // tiene una URL real (una recarga conserva token y ruta), el
+            // service worker no puede cachear el HTML del servidor y el
+            // launcher no tiene que reponer nada a mano. El HTML con el
+            // viewport bloqueado y el shim los sirve shouldInterceptRequest.
+            v2DocReady = false;
+            web.loadUrl(full, headers);
+            return;
+        }
         web.loadUrl(full, headers);
     }
 
-    /** Si el service worker sirvio el HTML original (o la pagina se recargo
-     *  fuera de webLoad), vuelve a cargar el documento con el viewport
-     *  bloqueado. Dos intentos como maximo para no entrar en bucle. */
-    private int v2DocFixes = 0;
-
+    /** El launcher sirve el HTML con el viewport bloqueado, pero si la pagina
+     *  llegara servida de otra forma (el HTML original del servidor), se
+     *  inyecta la meta en vez de recargar el documento: recargar aqui se ve
+     *  como un parpadeo. */
     private void ensureV2Doc(String url) {
-        if (url == null || !url.startsWith(URL)) return;
         web.evaluateJavascript(
-                "(function(){var m=document.querySelector('meta[name=viewport]');"
-                        + "return !!(m&&m.content&&m.content.indexOf('user-scalable=no')>=0);})()",
-                value -> {
-                    if ("true".equals(value)) {
-                        v2DocFixes = 0;
-                        return;
-                    }
-                    if (v2DocFixes >= 2) return;
-                    v2DocFixes++;
-                    webLoad(url);
-                });
+                "(function(){try{"
+                + "var m=document.querySelector('meta[name=viewport]');"
+                + "if(m&&m.content&&m.content.indexOf('user-scalable=no')>=0)return 'ok';"
+                + "var t=document.createElement('meta');t.name='viewport';"
+                + "t.content='width=device-width, initial-scale=1, maximum-scale=1,"
+                + "user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content';"
+                + "(document.head||document.documentElement).appendChild(t);"
+                + "return 'inyectado';}catch(e){return 'ERR:'+e;}})()",
+                value -> Log.d("OpenCode", "v2-viewport: " + value));
+    }
+
+    /** El shim de v2 ya esta en la pagina: no hay que reinstalarlo en cada
+     *  navegacion de la SPA (eso hacia parpadeos). */
+    private boolean v2DocReady = false;
+
+    /** Service workers borrados en esta carga (uno por documento). */
+    private boolean v2SwClean = false;
+
+    /** El shim del token tambien se instala desde Java: si la pagina la sirvio
+     *  un service worker viejo (HTML cacheado, sin nuestro <script>), el shim
+     *  del HTML no esta y la URL se quedaria sin token. */
+    private void installV2TokenShim() {
+        String tok = authToken();
+        web.evaluateJavascript(
+                "(function(){try{"
+                + "if(window.__ocTokShim)return 'ya';window.__ocTokShim=1;"
+                + "var T='" + tok + "';"
+                + "function wt(u){if(typeof u!=='string'||u==='')return u;"
+                + "if(u.indexOf('auth_token=')>=0)return u;"
+                + "if(u.charAt(0)==='#')return u;"
+                + "return u+(u.indexOf('?')>=0?'&':'?')+'auth_token='+T;}"
+                + "var p=history.pushState,r=history.replaceState;"
+                + "history.pushState=function(s,t,u){return p.call(this,s,t,wt(u));};"
+                + "history.replaceState=function(s,t,u){return r.call(this,s,t,wt(u));};"
+                + "try{"
+                + "if(navigator.serviceWorker){"
+                + "var blk=function(){return Promise.reject(new Error('sw off'));};"
+                + "try{Object.defineProperty(navigator.serviceWorker,'register',"
+                + "{value:blk,configurable:true,writable:true});}"
+                + "catch(e){navigator.serviceWorker.register=blk;}"
+                + "}}catch(e){}"
+                + "return 'tok-ok';}catch(e){return 'ERR:'+e;}})()",
+                value -> Log.d("OpenCode", "v2-tok: " + value));
+    }
+
+    /** Borra los service workers registrados y sus caches.
+     *
+     *  La UI registra uno que cachea la app. Si ese worker controla la
+     *  pagina, el WebView de Android deja de pasar las peticiones por
+     *  shouldInterceptRequest y el launcher dejaria de servir su HTML (con
+     *  el viewport bloqueado y el shim): la pagina se queda a medias y la
+     *  recarga pierde el token. Sin worker, todo sigue pasando por el
+     *  launcher. */
+    private void clearV2ServiceWorkers() {
+        web.evaluateJavascript(
+                "(function(){try{"
+                + "if(!navigator.serviceWorker||!navigator.serviceWorker.getRegistrations)return 'no-sw';"
+                + "navigator.serviceWorker.getRegistrations().then(function(rs){"
+                + "rs.forEach(function(r){try{r.unregister();}catch(e){}});});"
+                + "if(window.caches&&window.caches.keys)window.caches.keys().then(function(ks){"
+                + "ks.forEach(function(k){try{window.caches.delete(k);}catch(e){}});});"
+                + "return 'sw-limpio';}catch(e){return 'ERR:'+e;}})()",
+                value -> Log.d("OpenCode", "v2-sw: " + value));
+    }
+
+    /** Contenido de assets/oc-v2.js (shim de la UI v2). */
+    private String v2ShimCache = null;
+
+    private String v2Shim() {
+        if (v2ShimCache != null) return v2ShimCache;
+        try (InputStream in = getAssets().open("oc-v2.js")) {
+            v2ShimCache = readAll(in);
+        } catch (Exception e) {
+            log("oc-v2.js no disponible: " + e);
+            v2ShimCache = "";
+        }
+        return v2ShimCache;
+    }
+
+    /** Anade el shim de v2 al HTML. Va en el <head> para que corra antes que
+     *  el bundle de la app (que va al final del body). */
+    private String injectV2Shim(String html) {
+        String tag = "<script src=\"/oc-v2.js\"></script>";
+        int head = html.indexOf("<head>");
+        if (head >= 0) {
+            int at = head + "<head>".length();
+            return html.substring(0, at) + tag + html.substring(at);
+        }
+        return tag + html;
     }
 
     /** Una sola carga de la URL (evita recargas dobles que se ven como saltos). */
@@ -2796,6 +2970,7 @@ public class MainActivity extends AppCompatActivity {
         long ts = p.getLong("upd_ts", 0);
         boolean fresh = p.getInt("upd_v", 0) == 5
                 && !p.getString("upd_installed", "").isEmpty()
+                && !p.getString("upd_latest", "").isEmpty()
                 && runtimeKey.equals(p.getString("upd_runtime", ""))
                 && System.currentTimeMillis() - ts < 24L * 3600 * 1000;
         if (fresh && !verbose) {
@@ -2823,13 +2998,31 @@ public class MainActivity extends AppCompatActivity {
             String latest = UpdateCheck.latestOpencode();
             boolean pending = installed != null && latest != null
                     && cmpVer(latest, installed) > 0;
-            getSharedPreferences("app", MODE_PRIVATE).edit()
-                    .putInt("upd_v", 5)
-                    .putLong("upd_ts", System.currentTimeMillis())
-                    .putString("upd_runtime", runtimeKey)
-                    .putBoolean("upd_pending", pending)
-                    .putString("upd_installed", installed != null ? installed : "")
-                    .putString("upd_latest", latest != null ? latest : "").apply();
+            // Solo se da por buena la comprobacion si se pudo preguntar a
+            // GitHub. Si la llamada falla (sin red, limite de la API) no se
+            // guarda la marca de tiempo: si se guardara, la app creeria
+            // haber comprobado hace un momento y no volveria a preguntar
+            // en 24 h, con lo que un aviso de actualizacion real se
+            // quedaria sin mostrar hasta el dia siguiente.
+            boolean ok = latest != null && !latest.isEmpty();
+            android.content.SharedPreferences.Editor ed =
+                    getSharedPreferences("app", MODE_PRIVATE).edit()
+                            .putInt("upd_v", 5)
+                            .putString("upd_runtime", runtimeKey)
+                            .putBoolean("upd_pending", pending)
+                            .putString("upd_installed", installed != null ? installed : "")
+                            .putString("upd_latest", latest != null ? latest : "");
+            if (ok) {
+                ed.putLong("upd_ts", System.currentTimeMillis());
+            } else {
+                // Se invalida la marca para que la proxima comprobacion
+                // vuelva a preguntar.
+                ed.putLong("upd_ts", 0);
+            }
+            ed.apply();
+            android.util.Log.d("OC-Update", "check: inst=" + installed
+                    + " latest=" + latest + " pendiente=" + pending
+                    + (ok ? "" : " (consulta fallida, se reintentara)"));
             runOnUiThread(() -> {
                 updatePending = pending;
                 updateInstallable = BuildConfig.V2 || !local;
@@ -2879,9 +3072,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String bundledUpdateText(String installed, String latest) {
-        return T("OpenCode ", "OpenCode ") + installed + " → " + latest
-                + T(" disponible; toca la notificación para instalarla",
-                        " available; tap the notification to install it");
+        // Si el aviso no esta en la bandeja no se puede decir "toca la
+        // notificacion": se indica como instalarlo de verdad.
+        String como = isNotificationActive(ServerWatch.NID_OC)
+                ? T(" disponible; toca la notificación para instalarla",
+                        " available; tap the notification to install it")
+                : T(" disponible; instálalo desde el menú de la app",
+                        " available; install it from the app menu");
+        return T("OpenCode ", "OpenCode ") + installed + " → " + latest + como;
     }
 
     /** Version instalada: 1) el propio servidor la dice en /global/health
@@ -3585,8 +3783,7 @@ public class MainActivity extends AppCompatActivity {
                                 // El aviso de pantalla completa caduca si ya se volvio al panel.
                                 if (message.startsWith("Pantalla completa") && !fullscreen) return;
                                 new Handler(Looper.getMainLooper())
-                                        .postDelayed(() -> Snackbar.make(web, message,
-                                                Snackbar.LENGTH_SHORT).show(), 180);
+                                        .postDelayed(() -> showStatusChip(message), 180);
                             }
                         }).start();
             }
@@ -3624,6 +3821,37 @@ private void refreshUpdateBtn() {
 
     /** Notificacion de opencode nuevo (una vez por version). Vale en abierto
      *  y la alarma diaria la reutiliza con la app cerrada. */
+    /** Tiene la app permiso de camara? (para escanear codigos QR) */
+    private boolean hasCameraPermission() {
+        try {
+            return checkSelfPermission(android.Manifest.permission.CAMERA)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Esta la notificacion con ese id todavia en la bandeja?
+     *
+     *  Se usa para saber si el aviso de actualizacion sigue visible: si el
+     *  usuario lo descarto, hay que volver a publicarlo mientras la version
+     *  pendiente no este instalada. */
+    private boolean isNotificationActive(int id) {
+        try {
+            android.app.NotificationManager nm = (android.app.NotificationManager)
+                    getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return false;
+            android.service.notification.StatusBarNotification[] active =
+                    nm.getActiveNotifications();
+            if (active == null) return false;
+            for (android.service.notification.StatusBarNotification n : active) {
+                if (n != null && n.getId() == id) return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     private void maybeNotifyOpencode(boolean pending, String installed, String latest) {
         try {
             android.app.NotificationManager nm = (android.app.NotificationManager)
@@ -3635,6 +3863,15 @@ private void refreshUpdateBtn() {
                 return;
             }
             android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
+            // El aviso se daba por bueno solo con la marca upd_notified, asi
+            // que si la notificacion se descartaba (o el sistema la
+            // quitaba) no volvia a aparecer nunca: el chip decia "toca la
+            // notificacion" sin haber ninguna. Ahora se vuelve a publicar
+            // mientras la version pendiente no este instalada.
+            if (latest.equals(p.getString("upd_notified", ""))
+                    && !isNotificationActive(ServerWatch.NID_OC)) {
+                p.edit().remove("upd_notified").apply();
+            }
             if (latest.equals(p.getString("upd_notified", ""))) return;
             String text = installed + " → " + latest + (LocalRuntime.available(this)
                     ? T(": toca para descargar e instalar",
@@ -3747,8 +3984,21 @@ private void refreshUpdateBtn() {
                     .putString("appupd_ver", UpdateCheck.appVersion(this)).apply();
             runOnUiThread(() -> {
                 applyLauncherCache(tag, url);
-                if (verbose && !appUpdatePending)
-                    snack(T("No hay actualizaciones", "No updates available"));
+                if (verbose) {
+                    // Al pulsar "Buscar actualización" se mira lo que hay
+                    // pendiente de instalar, no solo el APK del launcher:
+                    // el runtime de opencode tambien se actualiza por su
+                    // cuenta y es lo que suele estar pendiente.
+                    if (appUpdatePending) {
+                        snack(T("App ", "App ") + appUpdTag
+                                + T(" disponible; toca la notificación para instalarla",
+                                        " available; tap the notification to install it"));
+                    } else if (updatePending) {
+                        snack(bundledUpdateText(updInstalled, updLatest));
+                    } else {
+                        snack(T("No hay actualizaciones", "No updates available"));
+                    }
+                }
             });
         }).start();
     }
@@ -4551,12 +4801,155 @@ private void refreshAppUpdateBtn() {
         progress.setVisibility(busy ? View.VISIBLE : View.GONE);
     }
 
+    /** Con el dedo, al elegir un item del menu (Kobalte) el navegador sintetiza
+     *  un click DESPUES del pointerup. Ese click ya cae sobre el overlay del
+     *  dialogo que acaba de abrirse, y Kobalte lo lee como "clic en el
+     *  fondo": el dialogo de confirmacion se cierra al instante y la accion
+     *  (borrar sesion, renombrar, exportar) nunca llega al servidor.
+     *  Anulando el click sintetico (preventDefault en touchend) el item
+     *  conserva su seleccion y el dialogo se queda abierto. */
+    private void shimMenuSelect() {
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__ocMenuSelect)return 'ya';"
+                    + "window.__ocMenuSelect=true;"
+                    + "var ITEM='[data-component=\"menu-v2-item\"]';"
+                    + "var grabbed=null;"
+                    + "document.addEventListener('pointerdown',function(ev){"
+                    + "var it=ev.target&&ev.target.closest?ev.target.closest(ITEM):null;"
+                    + "if(it)grabbed=it;"
+                    + "},true);"
+                    + "document.addEventListener('touchend',function(ev){"
+                    + "if(!grabbed)return;"
+                    + "grabbed=null;"
+                    + "ev.preventDefault();ev.stopPropagation();"
+                    + "},true);"
+                    + "return 'menu-ok';}catch(e){return 'ERR:'+e;}})()",
+                    v -> Log.d("OpenCode", "menu-select: " + v));
+        } catch (Exception e) {
+            Log.d("OpenCode", "menu-select fallo: " + e.getMessage());
+        }
+    }
+
+    /** Cartel de estado del launcher: chip oscuro en la esquina, con fundido.
+     *  El Snackbar de Material3 sale claro en modo oscuro (usa
+     *  colorSurfaceInverse), rompe el tema de la app y ademas se desliza
+     *  desde abajo: mientras entra se ve cortado por el borde. */
+    private void showStatusChip(String m) {
+        if (txtStatusChip == null) return;
+        try {
+            txtStatusChip.setText(m);
+            // El ancho se fija DESPUES de poner el texto: hay que medir el
+            // texto natural para saber si cabe en una linea o hay que
+            // partirlo.
+            fitChipWidth();
+            txtStatusChip.setVisibility(View.VISIBLE);
+            txtStatusChip.animate().alpha(1f).setDuration(140).start();
+            chipHandler.removeCallbacks(hideStatusChip);
+            chipHandler.postDelayed(hideStatusChip, 2600);
+        } catch (Exception e) {
+            Log.d("OpenCode", "chip fallo: " + e);
+        }
+    }
+
+    /** Ajusta el ancho del cartel al texto.
+     *
+     *  Sin esto, wrap_content mide el texto en una sola linea: si es largo
+     *  el recuadro se estira hasta el borde derecho de la pantalla y la
+     *  segunda linea queda pegada a la izquierda (asimétrico). Al partirlo
+     *  a mano el recuadro queda corto y el texto se sale.
+     *
+     *  Se mide el texto con el mismo tipo de letra y se decide:
+     *   - si cabe en el ancho disponible, el recuadro se ajusta al texto
+     *     (una linea, como un cartel normal);
+     *   - si no cabe, el recuadro toma el ancho disponible y el texto se
+     *     parte en lineas, con gravity=center quedan equilibradas.
+     *
+     *  El ancho disponible es un porcentaje del ancho real de la pantalla,
+     *  asi que se adapta a cualquier resolucion (movil pequeno, tablet,
+     *  plegable) y al rotar, sin tener que mantener recursos por tamano. */
+    private void fitChipWidth() {
+        try {
+            View root = findViewById(android.R.id.content);
+            int avail = root != null ? root.getWidth() : 0;
+            if (avail <= 0) {
+                // Todavia sin medir: se espera al primer layout.
+                root.post(() -> fitChipWidth());
+                return;
+            }
+            // Margenes y padding del cartel: 16dp a cada lado + 14dp de
+            // relleno interior del texto.
+            float d = getResources().getDisplayMetrics().density;
+            int outer = (int) (16 * d);
+            int inner = (int) (14 * d);
+            int usable = avail - 2 * outer - 2 * inner;
+
+            android.text.TextPaint paint = new android.text.TextPaint();
+            paint.setTextSize(txtStatusChip.getTextSize());
+            paint.setTypeface(txtStatusChip.getTypeface());
+            float natural = paint.measureText(txtStatusChip.getText().toString());
+
+            ViewGroup.LayoutParams lp = txtStatusChip.getLayoutParams();
+            if (natural <= usable) {
+                // Cabe en una linea: el recuadro se ajusta al texto.
+                if (lp.width != ViewGroup.LayoutParams.WRAP_CONTENT) {
+                    lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                    txtStatusChip.setLayoutParams(lp);
+                }
+            } else {
+                // No cabe en una linea: el recuadro ocupa el ancho de la
+                // pantalla menos los margenes de los dos lados. El chip esta
+                // anclado a la izquierda (bottom|start), asi que para que
+                // quede igual de margen a la izquierda que a la derecha su
+                // ancho tiene que ser el ancho disponible menos los dos
+                // margenes. Con un porcentaje (por ejemplo 85%) sobra hueco
+                // a la derecha y el recuadro se ve asimetrico.
+                int w = avail - 2 * outer;
+                if (lp.width != w) {
+                    lp.width = w;
+                    txtStatusChip.setLayoutParams(lp);
+                }
+            }
+            // Comprobacion: los margenes a los dos lados deben ser iguales.
+            // Es la medida en pixeles del chip ya colocado; si no cuadra,
+            // el recuadro se ve asimetrico aunque el ancho sea el correcto.
+            txtStatusChip.post(() -> {
+                try {
+                    int[] chipPos = new int[2];
+                    int[] rootPos = new int[2];
+                    txtStatusChip.getLocationOnScreen(chipPos);
+                    root.getLocationOnScreen(rootPos);
+                    int izq = chipPos[0] - rootPos[0];
+                    int der = root.getWidth() - (chipPos[0] - rootPos[0]) - chipPos[2];
+                    if (Math.abs(izq - der) > 8) {
+                        Log.d("OpenCode", "chip asimetrico: margen izq=" + izq
+                                + " der=" + der);
+                    }
+                } catch (Exception ignored) {
+                }
+            });
+        } catch (Exception e) {
+            Log.d("OpenCode", "chip ancho fallo: " + e);
+        }
+    }
+
+    private final Runnable hideStatusChip = () -> {
+        if (txtStatusChip == null) return;
+        try {
+            txtStatusChip.animate().alpha(0f).setDuration(200).withEndAction(() -> {
+                if (txtStatusChip != null) txtStatusChip.setVisibility(View.GONE);
+            }).start();
+        } catch (Exception ignored) {
+        }
+    };
+
     private void snack(String m) {
         if (splash != null && splash.getVisibility() == View.VISIBLE) {
             pendingSplashSnack = m;
             return;
         }
-        Snackbar.make(web, m, Snackbar.LENGTH_SHORT).show();
+        showStatusChip(m);
     }
 
     private void log(String m) {
