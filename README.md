@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.1"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
+  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.2"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
   &nbsp;&nbsp;
   <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
 </p>
@@ -90,7 +90,7 @@ Both editions use the same release signing key, so future updates install over t
 
 ### v2 — new UI
 
-1. Download `OpenCodeAndroid-v5.0.1.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.1).
+1. Download `OpenCodeAndroid-v5.0.2.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.2).
 2. Open the file. If Android blocks it, allow **Install unknown apps** for your browser or file manager.
 3. Install and open **OpenCode Android v2**. It installs alongside v1; both can stay on the phone.
 4. Grant **All files access** when asked (Android 11+), or storage access on Android 8-10. This lets the agent read `/sdcard` and receive shared files.
@@ -113,7 +113,7 @@ sha256sum -c SHA256SUMS.txt
 On Windows PowerShell:
 
 ```powershell
-Get-FileHash .\OpenCodeAndroid-v5.0.1.apk -Algorithm SHA256
+Get-FileHash .\OpenCodeAndroid-v5.0.2.apk -Algorithm SHA256
 Get-FileHash .\OpenCodeAndroid-v4.0.3.apk -Algorithm SHA256
 ```
 
