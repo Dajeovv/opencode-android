@@ -130,6 +130,10 @@ public final class LocalToolbox {
             rewriteScriptHeaders(pref);
             fixTermuxSymlinks(pref);
             installPipShortcut(ctx, pref);
+            // Los scripts del toolbox (el comando "opencode" con la version)
+            // se regeneran para que el agente los tenga.
+            writePkgShim(ctx, pref);
+            writeRuntimeVersion(ctx, pref);
             marker.createNewFile();
         } catch (Exception e) {
             Log.w(TAG, "no se pudieron reescribir los scripts: " + e);
@@ -364,6 +368,7 @@ public final class LocalToolbox {
         writeManifest(ctx, now, idx);
         new File(prefix(ctx), ".opencode-toolbox").createNewFile();
         writePkgShim(ctx, prefix(ctx));
+        writeRuntimeVersion(ctx, prefix(ctx));
         deleteTree(stage);
         return new ArrayList<>(now);
     }
@@ -454,6 +459,7 @@ public final class LocalToolbox {
         writeManifestBundled(ctx, done, versions);
         new File(pref, ".opencode-toolbox").createNewFile();
         writePkgShim(ctx, pref);
+        writeRuntimeVersion(ctx, pref);
         deleteTree(stage);
         return done;
     }
@@ -616,6 +622,7 @@ public final class LocalToolbox {
         try {
             if (installed(ctx)) {
                 writePkgShim(ctx, prefix(ctx));
+        writeRuntimeVersion(ctx, prefix(ctx));
                 writeDeviceScripts(ctx, prefix(ctx));
             }
         } catch (Exception ignored) {
@@ -698,6 +705,28 @@ public final class LocalToolbox {
         }
 
         // Comandos con root: el agente los manda por HTTP y la app usa su.
+        // Comando "opencode": el agente no tenia forma de saber que version
+        // del runtime estaba usando (no hay binario en el PATH). Este
+        // envoltorio la dice y, con otros argumentos, pasa al binario real.
+        File opencode = new File(bin, "opencode");
+        String opencodeBody = "#!/system/bin/sh\n"
+                + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
+                + "# Version del runtime de opencode que usa la app.\n"
+                + "OC_VER=$(cat \"$OC_PREFIX/lib/oc-version\" 2>/dev/null)\n"
+                + "if [ -z \"$OC_VER\" ]; then OC_VER=desconocida; fi\n"
+                + "case \"${1:-}\" in\n"
+                + "  --version|-v|version)\n"
+                + "    echo \"opencode $OC_VER\"\n"
+                + "    exit 0 ;;\n"
+                + "esac\n"
+                + "OC_BIN=\"$OC_PREFIX/runtime/$OC_VER/opencode\"\n"
+                + "if [ ! -f \"$OC_BIN\" ]; then\n"
+                + "  echo \"opencode $OC_VER (binario no encontrado)\" >&2\n"
+                + "  exit 127\n"
+                + "fi\n"
+                + "exec /system/bin/linker64 \"$OC_BIN\" \"$@\"\n";
+        writeScript(opencode, opencodeBody);
+
         File root = new File(bin, "opencode-root");
         String rootBody = "#!/system/bin/sh\n"
                 + nativeCurlPrelude(ctx, pref)
@@ -933,6 +962,26 @@ public final class LocalToolbox {
         fixTermuxSymlinks(pref);
         deleteTree(tmp);
         data.delete();
+    }
+
+    /**
+     * Escribe la version del runtime en el prefijo, para que el comando
+     * "opencode" pueda decirla.
+     */
+    private static void writeRuntimeVersion(Context ctx, File pref) {
+        try {
+            File lib = new File(pref, "lib");
+            if (!lib.isDirectory() && !lib.mkdirs()) return;
+            String v = LocalRuntime.activeVersion(ctx);
+            if (v == null || v.isEmpty()) return;
+            java.io.FileOutputStream out = new java.io.FileOutputStream(
+                    new File(lib, "oc-version"));
+            out.write(v.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.flush();
+            out.close();
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo escribir la version del runtime: " + e);
+        }
     }
 
     /**

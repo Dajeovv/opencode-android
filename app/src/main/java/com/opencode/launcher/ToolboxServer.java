@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Log;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
@@ -141,6 +142,43 @@ public final class ToolboxServer {
                 sb.append('"').append(list.get(i)).append('"');
             }
             sb.append("],\"root\":\"").append(RootShell.state(ctx)).append('"');
+            return sb.append('}').toString();
+        }
+        // Version de la app y del runtime de opencode. El agente no tiene
+        // forma de saberla si no (no hay binario "opencode" en el PATH y el
+        // registro del servidor tampoco es accesible desde el shell).
+        if (path.startsWith("/version")) {
+            String ver = "";
+            try {
+                ver = LocalRuntime.activeVersion(ctx);
+            } catch (Exception ignored) {
+            }
+            String app = "";
+            try {
+                app = ctx.getPackageManager()
+                        .getPackageInfo(ctx.getPackageName(), 0).versionName;
+            } catch (Exception ignored) {
+            }
+            StringBuilder sb = new StringBuilder("{\"ok\":true");
+            sb.append(",\"opencode\":").append(jsonString(ver == null ? "" : ver));
+            sb.append(",\"app\":").append(jsonString(app == null ? "" : app));
+            // El binario que se esta usando: el descargado, o el que viene
+            // dentro del APK si no hay ninguno descargado.
+            String bin = "";
+            try {
+                File rb = LocalRuntime.runtimeBinary(ctx);
+                if (rb != null) {
+                    bin = rb.getAbsolutePath();
+                } else {
+                    File nd = new File(ctx.getApplicationInfo().nativeLibraryDir);
+                    bin = new File(nd, "libopencode2_bin.so").getAbsolutePath();
+                }
+            } catch (Exception ignored) {
+            }
+            sb.append(",\"runtime\":").append(jsonString(bin));
+            sb.append(",\"port\":").append(BuildConfig.SERVER_PORT);
+            sb.append(",\"server\":").append(jsonString(
+                    LocalRuntime.running() ? "up" : "down"));
             return sb.append('}').toString();
         }
         // Comandos como root con el su del sistema (el agente usa este endpoint
