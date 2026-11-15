@@ -146,7 +146,7 @@ public final class CommandResolver {
         write(new File(binDir, RUN_NAME), runScript(libPath,
                 prefixDir == null ? new File(TERMUX_PREFIX, "bin").getPath()
                         : prefixDir.getPath(),
-                LINKER));
+                LINKER, pipShortcut(prefixDir)));
         File proot = new File(binDir, PROOT_NAME);
         write(proot, prootScript(home, nd, tmp, etc));
         write(new File(binDir, ADB_SERVER_NAME), adbServerScript(binDir, home));
@@ -309,36 +309,36 @@ public final class CommandResolver {
      *  si deja que el linker del sistema lo lea: por eso se lanza con
      *  linker64 y LD_LIBRARY_PATH acotado.
      *
-     *  Con esto los scripts ya no necesitan el sandbox de proot.
+     *  El script solo usa comandos internos del shell (read, case): ninguna
+     *  utilidad externa, porque las del prefijo no se pueden ejecutar y las
+     *  del sistema no estan en el PATH de forma fiable.
      */
-    private static String runScript(String libPath, String realPrefix, String linker) {
+    private static String runScript(String libPath, String realPrefix, String linker,
+            String pipShortcut) {
         return "#!/system/bin/sh\n"
                 + "# Generado por CommandResolver. No editar a mano.\n"
                 + "# Ejecuta un comando del prefijo de forma nativa, sin proot.\n"
                 + "OC_NATIVE_LIB_PATH=" + q(libPath) + "\n"
-                + "OC_NATIVE_PREFIX=" + q(realPrefix) + "\n"
                 + "export LD_LIBRARY_PATH=\"$OC_NATIVE_LIB_PATH\"\n"
-                + "export PATH=\"$OC_NATIVE_PREFIX/bin:$PATH\"\n"
                 + "CMD=\"$1\"\n"
                 + "shift 2>/dev/null\n"
-                + "# Si el interprete del script es un ELF (python, perl...), se\n"
-                + "# lanza con el linker del sistema para que encuentre sus libs.\n"
-                + "# El interprete no puede recibir el script como argumento (argv[0]\n"
-                + "# se perderia), asi que se ejecuta como modulo: pip, pydoc... son\n"
-                + "# modulos de python y los stubs del prefijo no tienen cuerpo.\n"
-                + "INTERP=$(head -1 \"$CMD\" 2>/dev/null | sed 's|^#!||')\n"
+                + "# Primera linea del script, con el comando interno read (sin\n"
+                + "# utilidades externas: las del prefijo no se pueden ejecutar).\n"
+                + "INTERP=\"\"\n"
+                + "if [ -f \"$CMD\" ]; then IFS= read -r INTERP < \"$CMD\" 2>/dev/null; fi\n"
+                + "INTERP=${INTERP#\\#!}\n"
                 + "case \"$INTERP\" in\n"
                 + "  */bin/python*)\n"
-                + "    MOD=$(basename \"$CMD\")\n"
-                + "    if [ \"$MOD\" = pip ] && [ -f \"$OC_NATIVE_PREFIX/lib/python3.14/site-packages/ocpip.py\" ]; then\n"
-                + "      # Atajo de pip para las consultas de solo lectura: el atajo\n"
-                + "      # devuelve 2 si la orden no es de esas y entonces se\n"
-                + "      # ejecuta el pip de verdad.\n"
-                + "      " + linker + " \"$INTERP\" "
-                + "\"$OC_NATIVE_PREFIX/lib/python3.14/site-packages/ocpip.py\" \"$@\"\n"
-                + "      RC=$?\n"
-                + "      if [ $RC -ne 2 ]; then exit $RC; fi\n"
-                + "    fi\n"
+                + "    MOD=${CMD##*/}\n"
+                + (pipShortcut == null ? "" :
+                    "    if [ \"$MOD\" = pip ] && [ -f " + q(pipShortcut) + " ]; then\n"
+                        + "      # Atajo de pip para las consultas de solo lectura: el\n"
+                        + "      # atajo devuelve 2 si la orden no es de esas y entonces\n"
+                        + "      # se ejecuta el pip de verdad.\n"
+                        + "      " + linker + " \"$INTERP\" " + q(pipShortcut) + " \"$@\"\n"
+                        + "      RC=$?\n"
+                        + "      if [ $RC -ne 2 ]; then exit $RC; fi\n"
+                        + "    fi\n")
                 + "    exec " + linker + " \"$INTERP\" -m \"$MOD\" \"$@\" ;;\n"
                 + "esac\n"
                 + "exec /system/bin/sh \"$CMD\" \"$@\"\n";
@@ -352,13 +352,40 @@ public final class CommandResolver {
      *  el comando). Como los scripts son de shell, se pueden ejecutar de
      *  forma nativa: mucho mas rapido y sin la ruta falsa de Termux.
      */
+    /**
+     * Ruta del atajo de pip para las consultas de solo lectura, o null si no
+     * esta instalado.
+     */
+    private static String pipShortcut(File prefixDir) {
+        if (prefixDir == null) return null;
+        File lib = new File(prefixDir, "lib");
+        File[] kids = lib.listFiles();
+        if (kids == null) return null;
+        for (File k : kids) {
+            if (!k.isDirectory() || !k.getName().startsWith("python3")) continue;
+            File f = new File(new File(k, "site-packages"), "ocpip.py");
+            if (f.isFile()) return f.getAbsolutePath();
+        }
+        return null;
+    }
+
+    /**
+     * Funcion de shell para un script del prefijo: se ejecuta con oc-run,
+     * que pone LD_LIBRARY_PATH y usa el shell del sistema.
+     *
+     *  Antes cada script iba a proot (arrancar el sandbox costaba mas que
+     *  el comando). Como los scripts son de shell, se pueden ejecutar de
+     *  forma nativa: mucho mas rapido y sin la ruta falsa de Termux.
+     */
     private static String scriptFunction(String name, String path) {
-        // Se llama a oc-run por su ruta absoluta: no esta en el PATH del
-        // shell del agente (el prefijo no lo tiene).
+        // oc-run se invoca con /system/bin/sh, no directamente: Android
+        // bloquea execve en el directorio de datos de la app (untrusted_app),
+        // asi que un "oc-run ..." directo falla con Permission denied.
+        // Leer y ejecutar con el shell del sistema si que se permite.
         File parent = new File(path).getParentFile();
         String runner = parent == null ? RUN_NAME
                 : new File(parent, RUN_NAME).getAbsolutePath();
-        return name + "() { " + q(runner) + " " + q(path) + " \"$@\"; }";
+        return name + "() { /system/bin/sh " + q(runner) + " " + q(path) + " \"$@\"; }";
     }
 
     private static String nativeEnv(List<String> functions, String libPath) {

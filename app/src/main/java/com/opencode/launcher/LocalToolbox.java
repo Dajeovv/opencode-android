@@ -128,6 +128,7 @@ public final class LocalToolbox {
             if (marker.isFile()) return;
             if (!installed(ctx)) return;
             rewriteScriptHeaders(pref);
+            fixTermuxSymlinks(pref);
             installPipShortcut(ctx, pref);
             marker.createNewFile();
         } catch (Exception e) {
@@ -356,6 +357,7 @@ public final class LocalToolbox {
         // dpkg vuelve a desempaquetar los scripts con la ruta de Termux:
         // se reescriben para que el prefijo quede nativo.
         rewriteScriptHeaders(prefix(ctx));
+        fixTermuxSymlinks(prefix(ctx));
         // Atajo de pip para las consultas de solo lectura.
         installPipShortcut(ctx, prefix(ctx));
         for (Pkg pkg : plan) now.add(pkg.name);
@@ -432,6 +434,9 @@ public final class LocalToolbox {
         // acaba de desempaquetar. Se reescriben otra vez, ya con la
         // instalacion completa, para que todo el prefijo quede nativo.
         rewriteScriptHeaders(pref);
+        // Los enlaces simbolicos a la ruta de Termux (el certificado de
+        // certifi) quedan rotos fuera del sandbox: pip falla al instalar.
+        fixTermuxSymlinks(pref);
         // Atajo de pip para las consultas de solo lectura.
         installPipShortcut(ctx, pref);
 
@@ -925,6 +930,7 @@ public final class LocalToolbox {
         // reescriben a la ruta real para que corran con el shell de Android
         // sin necesidad de proot.
         rewriteScriptHeaders(pref);
+        fixTermuxSymlinks(pref);
         deleteTree(tmp);
         data.delete();
     }
@@ -966,6 +972,57 @@ public final class LocalToolbox {
         } catch (Exception e) {
             Log.w(TAG, "no se pudo instalar el atajo de pip: " + e);
         }
+    }
+
+    /**
+     * Repunta los enlaces simbolicos que apuntan a la ruta de Termux.
+     *
+     *  Los .deb de Termux traen enlaces absolutos a su propio prefijo (por
+     *  ejemplo el certificado de certifi, que apunta a
+     *  /data/data/com.termux/files/usr/etc/tls/cert.pem). Esa ruta solo
+     *  existe dentro del sandbox de proot: fuera, el enlace queda roto.
+     *  Python lo detecta como inexistente y pip falla con un error de SSL
+     *  al instalar cualquier paquete.
+     *
+     *  Se reapuntan al prefijo real de la app, que si existe. */
+    private static void fixTermuxSymlinks(File pref) {
+        String fake = SANDBOX_PREFIX;
+        String real = pref.getAbsolutePath().replace("/data/user/0/", "/data/data/");
+        int fixed = 0;
+        try {
+            fixed = fixSymlinksIn(pref, fake, real);
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudieron arreglar los enlaces: " + e);
+        }
+        if (fixed > 0) {
+            Log.i(TAG, "enlaces simbolicos reapuntados: " + fixed);
+        }
+    }
+
+    /** Recorre el arbol y reapunta los enlaces que apuntan a la ruta falsa. */
+    private static int fixSymlinksIn(File dir, String fake, String real) {
+        int fixed = 0;
+        File[] kids = dir.listFiles();
+        if (kids == null) return 0;
+        for (File k : kids) {
+            try {
+                if (java.nio.file.Files.isSymbolicLink(k.toPath())) {
+                    String target = Os.readlink(k.getAbsolutePath());
+                    if (target != null && target.startsWith(fake)) {
+                        String nuevo = real + target.substring(fake.length());
+                        Os.remove(k.getAbsolutePath());
+                        Os.symlink(nuevo, k.getAbsolutePath());
+                        fixed++;
+                    }
+                    continue;
+                }
+                if (k.isDirectory()) {
+                    fixed += fixSymlinksIn(k, fake, real);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return fixed;
     }
 
     /**
