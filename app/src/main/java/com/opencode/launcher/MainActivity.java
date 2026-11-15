@@ -159,6 +159,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean fullscreen = false;
     /** Alto del teclado en px; 0 cuando esta oculto. */
     private int imeBottom = 0;
+    /** Alto de la barra de estado: la web arranca por debajo de ella. */
+    private int statusTop = 0;
     /** Padding base del contenido: 0 en chat, 16dp en el panel. */
     private int chatPad = 0;
     private boolean urlLoading = false;
@@ -267,9 +269,23 @@ public class MainActivity extends AppCompatActivity {
         // al contenido y se avisa a la SPA para que recolque en el acto.
         ViewCompat.setOnApplyWindowInsetsListener(boxContent, (v, insets) -> {
             int ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
-            if (ime != imeBottom) {
+            // Alto de la barra de estado: la web tiene que empezar por
+            // debajo de ella, si no la cabecera de la pagina queda tapada.
+            int top = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
+            // Lo que la pagina ya se aparta sola (env(safe-area-inset-top)
+            // vale lo que mida el recorte de la camara: en un movil con
+            // agujero, la cabecera ya queda debajo de la barra y aqui no
+            // hay que reservar nada).
+            int cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout()).top;
+            // La diferencia es lo que falta por apartar. En un movil sin
+            // recorte (recorte=0) hay que reservarlo entero, si no la
+            // cabecera de la pagina se queda debajo de la barra de estado.
+            int need = Math.max(0, top - cutout);
+            if (ime != imeBottom || need != statusTop) {
                 imeBottom = ime;
+                statusTop = need;
                 applyChatPadding();
+                applyStatusTop();
                 v.postDelayed(() -> {
                     if (web == null) return;
                     web.requestLayout();
@@ -4255,7 +4271,11 @@ private void refreshAppUpdateBtn() {
         cardWeb.setStrokeWidth(0);
         android.view.ViewGroup.MarginLayoutParams lp =
                 (android.view.ViewGroup.MarginLayoutParams) cardWeb.getLayoutParams();
-        lp.topMargin = full ? 0 : dp(16);
+        // La web va de borde a borde y se aparta sola de la barra de estado
+        // (env(safe-area-inset-top)); aqui solo se reserva lo que la pagina
+        // no se aparta (en un movil sin recorte, esa diferencia es toda la
+        // barra de estado).
+        lp.topMargin = full ? statusTop : dp(16);
         lp.leftMargin = 0;
         lp.rightMargin = 0;
         lp.bottomMargin = 0;
@@ -4271,6 +4291,25 @@ private void refreshAppUpdateBtn() {
     private void applyChatPadding() {
         if (boxContent == null) return;
         boxContent.setPadding(chatPad, chatPad, chatPad, chatPad + imeBottom);
+    }
+
+    /** Margen superior de la tarjeta web.
+     *
+     *  En pantalla completa la web va de borde a borde: la pagina se aparta
+     *  sola de la barra de estado (env(safe-area-inset-top)), asi que aqui
+     *  solo se reserva lo que la pagina no se aparta (statusTop). En un
+     *  movil con camara en el recorte, statusTop es 0 y la web llega hasta
+     *  arriba; en uno sin recorte, es el alto de la barra y su cabecera no
+     *  queda debajo. */
+    private void applyStatusTop() {
+        if (cardWeb == null) return;
+        android.view.ViewGroup.MarginLayoutParams lp =
+                (android.view.ViewGroup.MarginLayoutParams) cardWeb.getLayoutParams();
+        int top = fullscreen ? statusTop : dp(16);
+        if (lp.topMargin != top) {
+            lp.topMargin = top;
+            cardWeb.setLayoutParams(lp);
+        }
     }
 
     /** La pagina de opencode trae su propio marco (margen/borde). Lo aplanamos con CSS. */
@@ -4623,7 +4662,12 @@ private void refreshAppUpdateBtn() {
             if (c != null) {
                 c.setSystemBarsBehavior(
                         WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-                c.hide(WindowInsetsCompat.Type.systemBars());
+                // La barra de estado se ve siempre (hora, avisos, bateria):
+                // taparla obligaba a deslizar para enterarse de nada. Solo
+                // se oculta la de navegacion, que es la que da el aire de
+                // pantalla completa.
+                c.show(WindowInsetsCompat.Type.statusBars());
+                c.hide(WindowInsetsCompat.Type.navigationBars());
             }
         } catch (Exception ignored) {
         }
