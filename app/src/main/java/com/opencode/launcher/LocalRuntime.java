@@ -259,6 +259,9 @@ public final class LocalRuntime {
         File binDir = LocalToolbox.installed(app)
                 ? new File(LocalToolbox.prefix(app), "bin")
                 : new File(home, "bin");
+        // Los scripts del prefijo se dejan apuntando a la ruta real para
+        // que el agente no necesite proot. Se hace una sola vez.
+        LocalToolbox.ensureNativeScripts(app);
         File wrapper = CommandResolver.install(home, nd, tmp, etc, binDir);
         // Android no deja hacer execve de scripts en files/ (untrusted_app).
         // El unico sitio ejecutable es nativeLibraryDir, donde va este

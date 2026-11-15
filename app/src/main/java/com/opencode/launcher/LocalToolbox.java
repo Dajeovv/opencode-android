@@ -31,11 +31,13 @@ import java.util.zip.GZIPInputStream;
 /**
  * Caja de herramientas estilo Termux dentro de la app: descarga paquetes del
  * repositorio oficial de Termux (aarch64) y los instala en un prefijo propio
- * (files/usr) que luego se monta en proot como /data/data/com.termux/files/usr.
+ * (files/usr).
  *
- * Los binarios de Termux llevan el prefijo absoluto compilado dentro, asi que
- * solo funcionan si el prefijo existe en esa ruta dentro del sandbox: de ahi
- * el montage en proot.
+ * Los binarios de Termux son ELF de Android (bionic), asi que se pueden
+ * ejecutar de forma nativa con el linker del sistema: no hace falta el
+ * sandbox de proot para usarlos. El prefijo se expone ademas en la ruta
+ * /data/data/com.termux/files/usr dentro de proot, que sigue haciendo falta
+ * para el gestor de paquetes (apt/dpkg), que escribe por ruta absoluta.
  */
 public final class LocalToolbox {
     private static final String TAG = "OpenCodeToolbox";
@@ -107,6 +109,29 @@ public final class LocalToolbox {
     /** ¿Termino la instalacion completa (con el gestor de paquetes)? */
     public static boolean complete(Context ctx) {
         return new File(prefix(ctx), ".opencode-toolbox").isFile();
+    }
+
+    /**
+     * Deja el prefijo listo para usarse de forma nativa.
+     *
+     *  Los scripts vienen con la ruta de Termux en el interprete. Se
+     *  reescriben una sola vez (se marca con un fichero) para que el
+     *  prefijo no necesite proot: asi el agente ve la ruta real y los
+     *  comandos van mas rapido.
+     *
+     *  Es idempotente y barato: si no hay nada que reescribir no hace
+     *  nada. */
+    public static void ensureNativeScripts(Context ctx) {
+        try {
+            File pref = prefix(ctx);
+            File marker = new File(pref, ".opencode-native-scripts");
+            if (marker.isFile()) return;
+            if (!installed(ctx)) return;
+            rewriteScriptHeaders(pref);
+            marker.createNewFile();
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudieron reescribir los scripts: " + e);
+        }
     }
 
     /** Paquetes ya instalados (del manifiesto). */
@@ -327,6 +352,9 @@ public final class LocalToolbox {
                 "dpkg --unpack /tmp/toolbox-debs/*.deb >/dev/null 2>&1; "
                         + "dpkg --configure -a 2>&1 | tail -3", 600000);
         Log.i(TAG, "dpkg: " + out.replace("\n", " | "));
+        // dpkg vuelve a desempaquetar los scripts con la ruta de Termux:
+        // se reescriben para que el prefijo quede nativo.
+        rewriteScriptHeaders(prefix(ctx));
         for (Pkg pkg : plan) now.add(pkg.name);
         writeManifest(ctx, now, idx);
         new File(prefix(ctx), ".opencode-toolbox").createNewFile();
@@ -396,6 +424,11 @@ public final class LocalToolbox {
                 "dpkg --unpack /tmp/toolbox-debs/*.deb >/dev/null 2>&1; "
                         + "dpkg --configure -a 2>&1 | tail -5", 600000);
         Log.i(TAG, "dpkg: " + dpkgOut.replace("\n", " | "));
+
+        // Los scripts vuelven a venir con la ruta de Termux: dpkg los
+        // acaba de desempaquetar. Se reescriben otra vez, ya con la
+        // instalacion completa, para que todo el prefijo quede nativo.
+        rewriteScriptHeaders(pref);
 
         // Fase 3: el indice de paquetes para apt.
         if (p != null) p.onStep(ServerWatch.t(ctx,
@@ -882,8 +915,89 @@ public final class LocalToolbox {
             src = new File(tmp, "data/data/com.termux/files/usr");
         }
         if (src.isDirectory()) mergeTree(src, pref);
+        // Los scripts del paquete apuntan a la ruta de Termux
+        // (/data/data/com.termux/files/usr/bin/sh), que aqui no existe. Se
+        // reescriben a la ruta real para que corran con el shell de Android
+        // sin necesidad de proot.
+        rewriteScriptHeaders(pref);
         deleteTree(tmp);
         data.delete();
+    }
+
+    /**
+     * Reescribe la primera linea de los scripts del prefijo para que usen el
+     * shell real de la app en vez de la ruta de Termux.
+     *
+     * Los .deb de Termux llevan el interprete compilado dentro
+     * (#!/data/data/com.termux/files/usr/bin/sh). Como los binarios son
+     * bionic, en realidad solo hace falta /system/bin/sh: el shebang se
+     * cambia y asi los scripts pueden ejecutarse de forma nativa, sin el
+     * sandbox de proot.
+     *
+     * Solo se tocan ficheros de texto que empiezan por "#!" y cuya primera
+     * linea mencione la ruta de Termux: el resto no se toca.
+     */
+    private static void rewriteScriptHeaders(File pref) {
+        File bin = new File(pref, "bin");
+        if (!bin.isDirectory()) return;
+        String realPrefix = pref.getAbsolutePath();
+        File[] files = bin.listFiles();
+        if (files == null) return;
+        int changed = 0;
+        for (File f : files) {
+            if (!f.isFile()) continue;
+            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw")) {
+                if (raf.length() < 4 || raf.length() > 256 * 1024) continue;
+                byte[] head = new byte[(int) Math.min(raf.length(), 512)];
+                raf.seek(0);
+                raf.readFully(head);
+                String line = new String(head, java.nio.charset.StandardCharsets.UTF_8);
+                int nl = line.indexOf('\n');
+                String first = nl >= 0 ? line.substring(0, nl) : line;
+                if (!first.startsWith("#!")) continue;
+                if (!first.contains("com.termux")) continue;
+                // Los scripts de shell usan el shell de Android (mksh). Los
+                // de bash se dejan con la ruta de Termux: se ejecutan dentro
+                // de proot, donde si hay bash y el prefijo esta montado.
+                //
+                // Los de python y perl apuntan al prefijo real de la app,
+                // que si existe en disco y se puede ejecutar con el linker.
+                String newFirst = first;
+                boolean bash = newFirst.contains("/bin/bash")
+                        || newFirst.contains("/bin/ba ");
+                if (bash) {
+                    // Se dejan como estaban (con la ruta de Termux).
+                    continue;
+                }
+                if (newFirst.contains("/bin/sh")) {
+                    newFirst = newFirst.replaceAll("^#!\\s*/\\S*/bin/sh",
+                            "#!/system/bin/sh");
+                }
+                newFirst = newFirst.replace(SANDBOX_PREFIX, realPrefix);
+                if (newFirst.contains("com.termux")) {
+                    // No se ha podido reescribir: se deja como estaba.
+                    continue;
+                }
+                byte[] nb = (newFirst + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                if (nb.length != (nl + 1 > 0 ? nl + 1 : first.length())) {
+                    // Cambia el tamano: se reescribe el fichero entero.
+                    byte[] rest = new byte[(int) (raf.length() - head.length)];
+                    raf.readFully(rest);
+                    try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+                        out.write(nb);
+                        out.write(rest);
+                    }
+                } else {
+                    raf.seek(0);
+                    raf.write(nb);
+                }
+                changed++;
+            } catch (Exception ignored) {
+            }
+        }
+        if (changed > 0) {
+            Log.i(TAG, "scripts del prefijo reescritos: " + changed);
+        }
     }
 
     /** Saca del ar el miembro que empieza por "data.tar" (xz o gz). */

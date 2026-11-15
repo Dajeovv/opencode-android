@@ -39,6 +39,8 @@ public final class CommandResolver {
     public static final String SHELL_NAME = "oc-shell";
     public static final String PROOT_NAME = "oc-proot";
     public static final String NATIVE_ENV_NAME = "oc-native-env.sh";
+    /** Ejecutor de comandos del prefijo (scripts) de forma nativa. */
+    public static final String RUN_NAME = "oc-run";
     public static final String ADB_NAME = "oc-adb";
     public static final String ADB_SERVER_NAME = "oc-adb-server";
 
@@ -47,7 +49,11 @@ public final class CommandResolver {
             "/system/bin", "/system/xbin", "/vendor/bin"
     };
 
-    /** Comandos que necesitan el prefijo completo de Termux (proot). */
+    /** Comandos que necesitan el prefijo completo de Termux (proot).
+     *
+     *  Son los que leen o escriben el prefijo por ruta absoluta o necesitan
+     *  el gestor de paquetes (que asumes /data/data/com.termux/files/usr).
+     *  Todo lo demas se ejecuta de forma nativa. */
     private static final String[] PROOT_COMMANDS = {
             "pkg", "apt", "apt-get", "apt-cache", "apt-key", "dpkg", "dpkg-deb",
             "dpkg-query", "dpkg-trigger", "termux-change-repo", "termux-setup-storage",
@@ -57,6 +63,21 @@ public final class CommandResolver {
             // oc-adb arranca antes su servidor fuera de proot.
             "adb"
     };
+
+    /**
+     * Scripts del prefijo que siguen yendo a proot.
+     *
+     *  El gestor de paquetes (pkg/apt/dpkg) escribe en el prefijo por su
+     *  ruta absoluta de Termux y ejecuta los scripts de mantenimiento de
+     *  los paquetes, asi que necesita el sandbox montado. Ademas estan
+     *  escritos en bash, y el shell de Android (mksh) no los entiende.
+     */
+    private static final Set<String> SCRIPT_NAMES = new HashSet<>(Arrays.asList(
+            "pkg", "apt", "apt-get", "apt-cache", "apt-key", "apt-mark", "apt-config",
+            "dpkg", "dpkg-deb", "dpkg-query", "dpkg-trigger", "dpkg-buildapi",
+            "dpkg-buildtree", "dpkg-realpath", "dpkg-fsys-usrunmess", "dpkg-split",
+            "dpkg-trigger", "dpkg-genscripts", "add-apt-repository", "apt-mark-showhold"
+    ));
 
     /**
      * Binarios del prefijo que deben ganar a la version de /system/bin.
@@ -122,6 +143,10 @@ public final class CommandResolver {
         String libPath = String.join(":", libs);
         Scan scan = scan(binDir, libPath);
         write(new File(binDir, NATIVE_ENV_NAME), nativeEnv(scan.functions, libPath));
+        write(new File(binDir, RUN_NAME), runScript(libPath,
+                prefixDir == null ? new File(TERMUX_PREFIX, "bin").getPath()
+                        : prefixDir.getPath(),
+                LINKER));
         File proot = new File(binDir, PROOT_NAME);
         write(proot, prootScript(home, nd, tmp, etc));
         write(new File(binDir, ADB_SERVER_NAME), adbServerScript(binDir, home));
@@ -172,8 +197,22 @@ public final class CommandResolver {
                 if (proot.contains(name)) continue;
                 if (systemHas(name) && !PREFER_PREFIX.contains(name)) continue;
                 if (!isElf(file)) {
-                    // Script de verdad (npm, pip, pkg, termux-*...): necesita su prefijo.
-                    proot.add(name);
+                    // Script de verdad (npm, pip, pkg, termux-*...): se
+                    // ejecuta de forma nativa con oc-run, que pone
+                    // LD_LIBRARY_PATH y usa el shell del sistema. Antes
+                    // iban a proot, y arrancar el sandbox costaba mas que
+                    // el comando.
+                    if (needsBash(file)) {
+                        // Escrito en bash: el shell de Android (mksh) no lo
+                        // entiende. A proot, donde si hay bash.
+                        proot.add(name);
+                    } else if (SCRIPT_NAMES.contains(name)
+                            || VALID_NAME.matcher(name).matches()) {
+                        if (!seen.add(name)) continue;
+                        scan.functions.add(scriptFunction(name, file.getAbsolutePath()));
+                    } else {
+                        proot.add(name);
+                    }
                     continue;
                 }
                 if (SHELL_BUILTINS.contains(name)) continue;
@@ -206,6 +245,27 @@ public final class CommandResolver {
         return scan;
     }
 
+    /**
+     * true si el script esta escrito en bash.
+     *
+     *  El shell de Android es mksh, que no entiende la sintaxis de bash
+     *  (arrays, [[ ]], here-docs conResize, etc). Esos scripts tienen que
+     *  ir a proot, donde si hay bash.
+     */
+    private static boolean needsBash(File file) {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+            byte[] head = new byte[64];
+            int n = in.read(head);
+            if (n <= 0) return false;
+            String line = new String(head, 0, n, java.nio.charset.StandardCharsets.UTF_8);
+            int nl = line.indexOf('\n');
+            if (nl > 0) line = line.substring(0, nl);
+            return line.contains("/bash") || line.contains("/ba ");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static boolean systemHas(String name) {
         for (String dir : SYSTEM_DIRS) {
             if (new File(dir, name).isFile()) return true;
@@ -227,6 +287,69 @@ public final class CommandResolver {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * Ejecutor de comandos del prefijo (scripts de shell, npm, pip...).
+     *
+     *  Los scripts del prefijo son de shell y necesitan las librerias del
+     *  prefijo para sus interpretes (bash, python...). Android no deja
+     *  ejecutar nada del directorio de datos de la app, pero si dejar que el
+     *  linker del sistema lo lea. Este envoltorio pone LD_LIBRARY_PATH solo
+     * para el comando y ejecuta el script con el shell del sistema.
+     *
+     *  Con esto los scripts ya no necesitan el sandbox de proot.
+     */
+    /**
+     * Ejecuta un comando del prefijo (script) de forma nativa, sin proot.
+     *
+     *  Los scripts del prefijo son de shell y algunos (pip, pydoc...) tienen
+     *  un interprete ELF (python) que necesita las librerias del prefijo.
+     *  Android no deja ejecutar nada del directorio de datos de la app, pero
+     *  si deja que el linker del sistema lo lea: por eso se lanza con
+     *  linker64 y LD_LIBRARY_PATH acotado.
+     *
+     *  Con esto los scripts ya no necesitan el sandbox de proot.
+     */
+    private static String runScript(String libPath, String realPrefix, String linker) {
+        return "#!/system/bin/sh\n"
+                + "# Generado por CommandResolver. No editar a mano.\n"
+                + "# Ejecuta un comando del prefijo de forma nativa, sin proot.\n"
+                + "OC_NATIVE_LIB_PATH=" + q(libPath) + "\n"
+                + "OC_NATIVE_PREFIX=" + q(realPrefix) + "\n"
+                + "export LD_LIBRARY_PATH=\"$OC_NATIVE_LIB_PATH\"\n"
+                + "export PATH=\"$OC_NATIVE_PREFIX/bin:$PATH\"\n"
+                + "CMD=\"$1\"\n"
+                + "shift 2>/dev/null\n"
+                + "# Si el interprete del script es un ELF (python, perl...), se\n"
+                + "# lanza con el linker del sistema para que encuentre sus libs.\n"
+                + "# El interprete no puede recibir el script como argumento (argv[0]\n"
+                + "# se perderia), asi que se ejecuta como modulo: pip, pydoc... son\n"
+                + "# modulos de python y los stubs del prefijo no tienen cuerpo.\n"
+                + "INTERP=$(head -1 \"$CMD\" 2>/dev/null | sed 's|^#!||')\n"
+                + "case \"$INTERP\" in\n"
+                + "  */bin/python*)\n"
+                + "    MOD=$(basename \"$CMD\")\n"
+                + "    exec " + linker + " \"$INTERP\" -m \"$MOD\" \"$@\" ;;\n"
+                + "esac\n"
+                + "exec /system/bin/sh \"$CMD\" \"$@\"\n";
+    }
+
+    /**
+     * Funcion de shell para un script del prefijo: se ejecuta con oc-run,
+     * que pone LD_LIBRARY_PATH y usa el shell del sistema.
+     *
+     *  Antes cada script iba a proot (arrancar el sandbox costaba mas que
+     *  el comando). Como los scripts son de shell, se pueden ejecutar de
+     *  forma nativa: mucho mas rapido y sin la ruta falsa de Termux.
+     */
+    private static String scriptFunction(String name, String path) {
+        // Se llama a oc-run por su ruta absoluta: no esta en el PATH del
+        // shell del agente (el prefijo no lo tiene).
+        File parent = new File(path).getParentFile();
+        String runner = parent == null ? RUN_NAME
+                : new File(parent, RUN_NAME).getAbsolutePath();
+        return name + "() { " + q(runner) + " " + q(path) + " \"$@\"; }";
     }
 
     private static String nativeEnv(List<String> functions, String libPath) {
@@ -267,6 +390,11 @@ public final class CommandResolver {
         // "id; git status" tambien detecta git. Un falso positivo (p. ej.
         // "echo git") solo cuesta arrancar proot; un falso negativo rompe el
         // comando con Permission denied.
+        //
+        // El prefijo real (files/usr) ya no necesita proot: sus binarios son
+        // ELF de Android y se lanzan con el linker del sistema (ver
+        // oc-native-env.sh). Solo van a proot los comandos que el gestor de
+        // paquetes y el cliente adb necesitan.
         return "#!/system/bin/sh\n"
                 + "# Generado por CommandResolver. No editar a mano.\n"
                 + "# El shell del agente no hereda las librerias de Termux: los\n"
@@ -294,8 +422,6 @@ public final class CommandResolver {
                 + "    adb|" + TERMUX_PREFIX + "/bin/adb|\"$APP_FILES/usr/bin/adb\")\n"
                 + "      exec /system/bin/sh \"$OWN/" + ADB_NAME + "\" \"$CMD\" ;;\n"
                 + prootCase
-                + "    " + TERMUX_PREFIX + "/*|*" + TERMUX_PREFIX + "/*|*\"$APP_FILES\"*)\n"
-                + "      exec /system/bin/sh \"$OWN/" + PROOT_NAME + "\" \"$CMD\" ;;\n"
                 + "  esac\n"
                 + "  case \"$W\" in git) HAS_GIT=1 ;; esac\n"
                 + "  case \"$W\" in\n"
