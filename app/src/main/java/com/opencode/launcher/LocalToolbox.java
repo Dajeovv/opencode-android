@@ -128,6 +128,7 @@ public final class LocalToolbox {
             if (marker.isFile()) return;
             if (!installed(ctx)) return;
             rewriteScriptHeaders(pref);
+            installPipShortcut(ctx, pref);
             marker.createNewFile();
         } catch (Exception e) {
             Log.w(TAG, "no se pudieron reescribir los scripts: " + e);
@@ -355,6 +356,8 @@ public final class LocalToolbox {
         // dpkg vuelve a desempaquetar los scripts con la ruta de Termux:
         // se reescriben para que el prefijo quede nativo.
         rewriteScriptHeaders(prefix(ctx));
+        // Atajo de pip para las consultas de solo lectura.
+        installPipShortcut(ctx, prefix(ctx));
         for (Pkg pkg : plan) now.add(pkg.name);
         writeManifest(ctx, now, idx);
         new File(prefix(ctx), ".opencode-toolbox").createNewFile();
@@ -429,6 +432,8 @@ public final class LocalToolbox {
         // acaba de desempaquetar. Se reescriben otra vez, ya con la
         // instalacion completa, para que todo el prefijo quede nativo.
         rewriteScriptHeaders(pref);
+        // Atajo de pip para las consultas de solo lectura.
+        installPipShortcut(ctx, pref);
 
         // Fase 3: el indice de paquetes para apt.
         if (p != null) p.onStep(ServerWatch.t(ctx,
@@ -925,6 +930,45 @@ public final class LocalToolbox {
     }
 
     /**
+     * Instala el atajo de pip para las consultas de solo lectura.
+     *
+     *  pip arrastra toda la cadena de su interfaz (rich, logging,
+     *  traceback) y tarda unos 750 ms en arrancar aunque solo quiera listar
+     *  paquetes. Para esas consultas (list, show, freeze, --version) vale
+     *  con importlib.metadata, que es de la libreria estandar y tarda una
+     *  cuarta parte. El atajo devuelve 2 si la orden no es de solo lectura,
+     *  y entonces la ejecuta el pip de verdad.
+     */
+    private static void installPipShortcut(Context ctx, File pref) {
+        try {
+            File site = new File(pref, "lib/python3.14/site-packages");
+            if (!site.isDirectory()) {
+                // El nombre de la version de python puede cambiar: se busca.
+                File lib = new File(pref, "lib");
+                File[] kids = lib.listFiles();
+                if (kids != null) {
+                    for (File k : kids) {
+                        if (k.isDirectory() && k.getName().startsWith("python3")) {
+                            site = new File(k, "site-packages");
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!site.isDirectory()) return;
+            try (java.io.InputStream in = ctx.getAssets().open("ocpip.py");
+                 java.io.OutputStream out = new java.io.FileOutputStream(
+                         new File(site, "ocpip.py"))) {
+                byte[] buf = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo instalar el atajo de pip: " + e);
+        }
+    }
+
+    /**
      * Reescribe la primera linea de los scripts del prefijo para que usen el
      * shell real de la app en vez de la ruta de Termux.
      *
@@ -940,7 +984,11 @@ public final class LocalToolbox {
     private static void rewriteScriptHeaders(File pref) {
         File bin = new File(pref, "bin");
         if (!bin.isDirectory()) return;
-        String realPrefix = pref.getAbsolutePath();
+        // En Android /data/user/0/<app> es un enlace a /data/data/<app>: el
+        // mismo sitio. Se usa la forma /data/data, que es la que emplea el
+        // resto de la app, para que las rutas que imprime el prefijo (por
+        // ejemplo en la ayuda de pip) sean las de siempre.
+        String realPrefix = pref.getAbsolutePath().replace("/data/user/0/", "/data/data/");
         File[] files = bin.listFiles();
         if (files == null) return;
         int changed = 0;
@@ -955,7 +1003,9 @@ public final class LocalToolbox {
                 int nl = line.indexOf('\n');
                 String first = nl >= 0 ? line.substring(0, nl) : line;
                 if (!first.startsWith("#!")) continue;
-                if (!first.contains("com.termux")) continue;
+                if (!first.contains("com.termux") && !first.contains("/data/user/0/")) {
+                    continue;
+                }
                 // Los scripts de shell usan el shell de Android (mksh). Los
                 // de bash se dejan con la ruta de Termux: se ejecutan dentro
                 // de proot, donde si hay bash y el prefijo esta montado.
@@ -966,6 +1016,7 @@ public final class LocalToolbox {
                 boolean bash = newFirst.contains("/bin/bash")
                         || newFirst.contains("/bin/ba ");
                 if (bash) {
+                    if (!first.contains("com.termux")) continue;
                     // Se dejan como estaban (con la ruta de Termux).
                     continue;
                 }
@@ -974,6 +1025,9 @@ public final class LocalToolbox {
                             "#!/system/bin/sh");
                 }
                 newFirst = newFirst.replace(SANDBOX_PREFIX, realPrefix);
+                // /data/user/0/<app> y /data/data/<app> son el mismo sitio:
+                // se deja la forma que usa el resto de la app.
+                newFirst = newFirst.replace("/data/user/0/", "/data/data/");
                 if (newFirst.contains("com.termux")) {
                     // No se ha podido reescribir: se deja como estaba.
                     continue;
