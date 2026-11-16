@@ -698,7 +698,8 @@ public final class LocalToolbox {
                 {"termux-open-app", "open-app"},
                 {"termux-open-file", "open-file"},
                 {"termux-list-apps", "list-apps"},
-                {"termux-install-apk", "install-apk"}
+                {"termux-install-apk", "install-apk"},
+                {"termux-install-status", "install-status"}
         };
         for (String[] c : cmds) {
             File f = new File(bin, c[0]);
@@ -708,6 +709,32 @@ public final class LocalToolbox {
                     + " \"$@\"\n";
             writeScript(f, body);
         }
+
+        // Envoltorio de "pm": "pm install" no puede funcionar desde la app
+        // (el servidor del sistema no puede leer sus ficheros y el modo
+        // reverse es de shell/root). En vez de soltar un muro de errores de
+        // SELinux, se dice que use el comando que si funciona: asi el
+        // agente no se queda probando variantes del mismo camino.
+        File pm = new File(bin, "pm");
+        try {
+            java.nio.file.Files.deleteIfExists(pm.toPath());
+        } catch (Exception ignored) {
+        }
+        String pmBody = "#!/system/bin/sh\n"
+                + "# pm install no funciona desde una app normal.\n"
+                + "if [ \"$1\" = \"install\" ] || [ \"$1\" = \"install-create\" ]"
+                + " || [ \"$1\" = \"install-write\" ] || [ \"$1\" = \"install-commit\" ]"
+                + " || [ \"$1\" = \"install-session\" ]; then\n"
+                + "  echo \"pm $1 no puede funcionar desde esta app: el servidor\"\n"
+                + "  echo \"del sistema no puede leer sus ficheros y el modo reverse es\"\n"
+                + "  echo \"de shell/root. Usa: termux-install-apk <ruta> [sha256]\"\n"
+                + "  exit 1\n"
+                + "fi\n"
+                + "# Sin las libs del prefijo: si no, los binarios del sistema no\n"
+                + "# enlazan (\"cannot locate symbol Xzs_Construct\").\n"
+                + "unset LD_LIBRARY_PATH\n"
+                + "exec /system/bin/pm \"$@\"\n";
+        writeScript(pm, pmBody);
 
         // Comandos con root: el agente los manda por HTTP y la app usa su.
         // "am start" del sistema no vale desde una app normal: el comando se
@@ -752,6 +779,7 @@ public final class LocalToolbox {
                 + "    exit 1\n"
                 + "    ;;\n"
                 + "  *)\n"
+                + "    unset LD_LIBRARY_PATH\n"
                 + "    exec /system/bin/am \"$SUB\" \"$@\"\n"
                 + "    ;;\n"
                 + "esac\n";
@@ -903,6 +931,31 @@ public final class LocalToolbox {
                 + "\n"
                 + "You run inside a Termux-like sandbox owned by the OpenCode app.\n"
                 + "\n"
+                + "## What you can do on this phone\n"
+                + "These commands talk to the app, which does it with your\n"
+                + "permissions. Use them, they just work:\n"
+                + "\n"
+                + "    termux-open-url <url>       open a link (browser)\n"
+                + "    termux-open-app <package>   open an installed app\n"
+                + "    termux-open-file <path>     open a file with any viewer\n"
+                + "    termux-list-apps            list the installed apps\n"
+                + "    termux-install-apk <path>   install an APK\n"
+                + "    termux-install-status       state of the last install\n"
+                + "\n"
+                + "Do not waste the turn trying these, they cannot work here:\n"
+                + "\n"
+                + "- `pm install`: the system server cannot read the app's files\n"
+                + "  and the streaming mode is reserved for shell/root.\n"
+                + "- `su`/`sudo`: only work if the user granted Magisk root to\n"
+                + "  this app (see Root below).\n"
+                + "- `adb`: there is no adb on this phone.\n"
+                + "- `am start`: the system's `am` identifies as com.android.shell\n"
+                + "  and Android rejects the UID. The app wraps it, so\n"
+                + "  `am start -d <url>` and `am start -n <pkg/activity>` do work.\n"
+                + "\n"
+                + "When something like that fails, use the command above instead\n"
+                + "of looking for another way round it.\n"
+                + "\n"
                 + "## Environment facts\n"
                 + "\n"
                 + "- Check the Android version with `getprop ro.build.version.release` (and\n"
@@ -923,10 +976,12 @@ public final class LocalToolbox {
                 + "\n"
                 + rootNotes
                 + "## Android commands\n"
-                + "am, pm, settings, getprop, logcat, dumpsys, input, wm, svc,\n"
+                + "settings, getprop, logcat, dumpsys, input, wm, svc,\n"
                 + "screencap, uiautomator, appops, ip, ss and mount run the real\n"
                 + "Android tools (the sandbox wraps them so its libraries do not\n"
-                + "break them). Many still need root: if you see SecurityException,\n"
+                + "break them). `am` is wrapped as well: use it to open apps and\n"
+                + "links. `pm` only serves to list packages; to install an APK use\n"
+                + "termux-install-apk. Many still need root: if you see SecurityException,\n"
                 + androidNotes
                 + "\n"
                 + "/sdcard and /storage are readable and writable.\n"
@@ -967,6 +1022,10 @@ public final class LocalToolbox {
                 + "press \"Install\" in the dialog. With a sha256 as second argument\n"
                 + "the file is checked first and the install is aborted if it does\n"
                 + "not match.\n"
+                + "\n"
+                + "Afterwards, termux-install-status tells you how it ended:\n"
+                + "installed, failed (with the reason) or pending (the user has\n"
+                + "not confirmed yet).\n"
                 + "\n"
                 + "`pm install` does not work from here (the system server cannot\n"
                 + "read the app's private files and the reverse mode is reserved for\n"

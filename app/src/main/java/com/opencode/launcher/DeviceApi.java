@@ -103,6 +103,8 @@ public final class DeviceApi {
                     return listApps(ctx);
                 case "install-apk":
                     return installApk(ctx, args);
+                case "install-status":
+                    return installStatus();
                 default:
                     return null;
             }
@@ -120,6 +122,15 @@ public final class DeviceApi {
             return new JSONObject().put("error", msg == null ? "unknown" : msg).toString();
         } catch (Exception e) {
             return "{\"error\":\"json\"}";
+        }
+    }
+
+    /** Cadena lista para incrustar en un JSON. */
+    private static String jsonString(String s) {
+        try {
+            return JSONObject.quote(s == null ? "" : s);
+        } catch (Exception e) {
+            return "\"\"";
         }
     }
 
@@ -962,6 +973,14 @@ public final class DeviceApi {
     private static String pendingPkg = "";
     private static boolean pendingRetried = false;
 
+    /** Como termino la ultima instalacion (para que el agente lo pregunte). */
+    private static volatile String lastInstall = "{\"ok\":true,\"status\":\"none\"}";
+
+    /** Estado de la ultima instalacion: installed, failed o pending. */
+    private static String installStatus() {
+        return lastInstall;
+    }
+
     private static String installApk(Context ctx, List<String> args) throws Exception {
         JSONObject o = new JSONObject();
         try {
@@ -1055,6 +1074,8 @@ public final class DeviceApi {
                     PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
         }
         int sessionId = pm.getPackageInstaller().createSession(params);
+        lastInstall = "{\"ok\":true,\"status\":\"pending\",\"session\":" + sessionId
+                + ",\"package\":" + jsonString(pendingPkg) + "}";
         try (PackageInstaller.Session session =
                      pm.getPackageInstaller().openSession(sessionId)) {
             OutputStream out = session.openWrite("base.apk", 0, f.length());
@@ -1116,6 +1137,14 @@ public final class DeviceApi {
                         PackageInstaller.EXTRA_STATUS_MESSAGE);
                 Log.i("OpenCodeDevice", "instalacion: status=" + status
                         + (msg == null ? "" : " (" + msg + ")"));
+                if (status == PackageInstaller.STATUS_SUCCESS) {
+                    lastInstall = "{\"ok\":true,\"status\":\"installed\",\"package\":"
+                            + jsonString(pendingPkg) + "}";
+                } else if (status != PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                    lastInstall = "{\"ok\":false,\"status\":\"failed\",\"code\":" + status
+                            + ",\"message\":" + jsonString(msg == null ? "" : msg)
+                            + ",\"package\":" + jsonString(pendingPkg) + "}";
+                }
                 // Android 12+: el sistema pide accion del usuario y manda el
                 // intent de confirmacion. Hay que lanzarlo para que aparezca
                 // el instalador del sistema (el usuario pulsa "Instalar").

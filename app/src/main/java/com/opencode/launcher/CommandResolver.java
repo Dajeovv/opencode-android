@@ -88,7 +88,9 @@ public final class CommandResolver {
             // "am" del prefijo es un envoltorio: el del sistema nunca puede
             // abrir apps (se presenta como com.android.shell y el framework
             // rechaza el UID), asi que el nuestro tiene que ganar.
-            "find", "grep", "am"
+            // "pm" igual: el nuestro explica que "pm install" no puede
+            // funcionar y a que comando hay que ir.
+            "find", "grep", "am", "pm"
     ));
 
     /** Nombres que no se pueden definir como funcion (builtins o palabras raras). */
@@ -344,6 +346,10 @@ public final class CommandResolver {
                         + "    fi\n")
                 + "    exec " + linker + " \"$INTERP\" -m \"$MOD\" \"$@\" ;;\n"
                 + "esac\n"
+                + "# Un script no necesita las libs del prefijo, pero si las hereda\n"
+                + "# los binarios del sistema que lance fallan al enlazar\n"
+                + "# (\"cannot locate symbol Xzs_Construct\").\n"
+                + "unset LD_LIBRARY_PATH\n"
                 + "exec /system/bin/sh \"$CMD\" \"$@\"\n";
     }
 
