@@ -697,7 +697,8 @@ public final class LocalToolbox {
                 {"termux-open-url", "open-url"},
                 {"termux-open-app", "open-app"},
                 {"termux-open-file", "open-file"},
-                {"termux-list-apps", "list-apps"}
+                {"termux-list-apps", "list-apps"},
+                {"termux-install-apk", "install-apk"}
         };
         for (String[] c : cmds) {
             File f = new File(bin, c[0]);
@@ -958,6 +959,22 @@ public final class LocalToolbox {
                 + "\n"
                 + "If the app is not on screen the request becomes a notification:\n"
                 + "the user taps it and the app opens.\n"
+                + "\n"
+                + "## Installing an APK\n"
+                + "    termux-install-apk <path> [sha256]\n"
+                + "\n"
+                + "It installs the APK with the system's installer; the user has to\n"
+                + "press \"Install\" in the dialog. With a sha256 as second argument\n"
+                + "the file is checked first and the install is aborted if it does\n"
+                + "not match.\n"
+                + "\n"
+                + "`pm install` does not work from here (the system server cannot\n"
+                + "read the app's private files and the reverse mode is reserved for\n"
+                + "shell/root). Use termux-install-apk instead.\n"
+                + "\n"
+                + "If the answer is \"need_unknown_sources\", the user has to grant\n"
+                + "\"Install unknown apps\" to this app in Settings > Apps > Special\n"
+                + "access > Install unknown apps. The app opens that screen itself.\n"
                 + "\n"
                 + "## Battery\n"
                 + batteryNotes;

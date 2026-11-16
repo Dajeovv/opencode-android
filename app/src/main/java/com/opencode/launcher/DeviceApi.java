@@ -3,12 +3,15 @@ package com.opencode.launcher;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.IntentSender;
+import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.hardware.Sensor;
@@ -45,6 +48,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -97,6 +101,8 @@ public final class DeviceApi {
                     return openFile(ctx, arg(args, 0));
                 case "list-apps":
                     return listApps(ctx);
+                case "install-apk":
+                    return installApk(ctx, args);
                 default:
                     return null;
             }
@@ -927,5 +933,269 @@ public final class DeviceApi {
                 NotificationManager.IMPORTANCE_DEFAULT);
         ch.setDescription("Abrir apps y enlaces desde el agente");
         nm.createNotificationChannel(ch);
+    }
+
+    // ------------------------------------------------------- instalar APK
+
+    /**
+     * Instala un APK con la API de PackageInstaller, que es la via que el
+     * sistema reserva para las apps (no hace falta root ni shell).
+     *
+     * El comando "pm install" no sirve aqui: el servidor del sistema no
+     * puede leer los ficheros privados de la app y el modo "reverse" esta
+     * reservado a shell/root. Pero la app que crea la sesion es su
+     * propietaria, asi que puede escribir en ella con openWrite().
+     *
+     * Android 8+ pide confirmacion del usuario: sale el instalador del
+     * sistema y el usuario pulsa "Instalar". Si el sistema no logra mostrar
+     * esa pantalla (algunos ROM lo tienen roto), se reintenta sin dialogo:
+     * el usuario ya concedio a esta app el permiso de "instalar apps
+     * desconocidas", que es ese consentimiento.
+     */
+    private static final String INSTALL_RESULT = "com.opencode.android.INSTALL_RESULT";
+
+    private static BroadcastReceiver installReceiver;
+
+    /** Datos de la instalacion en curso, para poder reintentar. */
+    private static String pendingPath = "";
+    private static String pendingSha = "";
+    private static String pendingPkg = "";
+    private static boolean pendingRetried = false;
+
+    private static String installApk(Context ctx, List<String> args) throws Exception {
+        JSONObject o = new JSONObject();
+        try {
+            String path = arg(args, 0);
+            String sha = arg(args, 1).trim().toLowerCase(Locale.US);
+            if (path == null || path.trim().isEmpty()) {
+                o.put("error", "no path");
+                return o.toString();
+            }
+            File f = new File(path.trim());
+            if (!f.isFile()) {
+                o.put("error", "not found: " + path);
+                return o.toString();
+            }
+            // Hash opcional: el agente lo verifica contra el indice oficial
+            // antes de instalar, y aqui se comprueba otra vez.
+            if (!sha.isEmpty()) {
+                String real = sha256(f);
+                if (!real.equals(sha)) {
+                    o.put("error", "sha256 mismatch");
+                    o.put("expected", sha);
+                    o.put("got", real);
+                    return o.toString();
+                }
+                o.put("sha256", real);
+            }
+            PackageManager pm = ctx.getPackageManager();
+            // Permiso "instalar apps desconocidas": sin el, el sistema no
+            // deja instalar nada. Se pide yendo a los ajustes de la app.
+            if (!pm.canRequestPackageInstalls()) {
+                o.put("error", "need_unknown_sources");
+                o.put("needs_unknown_sources", true);
+                o.put("hint", "the user must grant Install unknown apps for "
+                        + "this app in Settings > Apps > Special access");
+                try {
+                    Intent si = new Intent(
+                            android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            android.net.Uri.parse("package:" + ctx.getPackageName()));
+                    si.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    MAIN.post(() -> {
+                        try {
+                            ctx.startActivity(si);
+                        } catch (Exception ignored) {
+                        }
+                    });
+                    o.put("status", "settings");
+                } catch (Exception ignored) {
+                }
+                return o.toString();
+            }
+            // Nombre del paquete que se va a instalar (lo lee del propio APK).
+            String pkg = "";
+            try {
+                android.content.pm.PackageInfo pi =
+                        pm.getPackageArchiveInfo(f.getAbsolutePath(), 0);
+                if (pi != null) pkg = pi.packageName == null ? "" : pi.packageName;
+            } catch (Exception ignored) {
+            }
+            pendingPath = f.getAbsolutePath();
+            pendingSha = sha;
+            pendingPkg = pkg;
+            pendingRetried = false;
+            ensureInstallReceiver(ctx);
+            int sessionId = startSession(ctx, f, false);
+            o.put("status", "installing");
+            o.put("session", sessionId);
+            if (!pkg.isEmpty()) o.put("package", pkg);
+            o.put("size", f.length());
+            return o.toString();
+        } catch (Exception e) {
+            return err(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /**
+     * Crea la sesion, escribe el APK y hace el commit.
+     *
+     * @param sinDialogo true para no pedir la pantalla de confirmacion
+     *                   (solo Android 12+; el usuario ya concedio el permiso)
+     */
+    private static int startSession(Context ctx, File f, boolean sinDialogo)
+            throws Exception {
+        PackageManager pm = ctx.getPackageManager();
+        PackageInstaller.SessionParams params =
+                new PackageInstaller.SessionParams(
+                        PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        params.setInstallerPackageName(ctx.getPackageName());
+        params.setSize(f.length());
+        if (sinDialogo && Build.VERSION.SDK_INT >= 31) {
+            params.setRequireUserAction(
+                    PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+        }
+        int sessionId = pm.getPackageInstaller().createSession(params);
+        try (PackageInstaller.Session session =
+                     pm.getPackageInstaller().openSession(sessionId)) {
+            OutputStream out = session.openWrite("base.apk", 0, f.length());
+            try {
+                copy(f, out);
+                session.fsync(out);
+            } finally {
+                try {
+                    out.close();
+                } catch (Exception ignored) {
+                }
+            }
+            session.commit(installSender(ctx, sessionId));
+        }
+        return sessionId;
+    }
+
+    /** Copia el APK a la sesion de instalacion. */
+    private static void copy(File f, OutputStream out) throws Exception {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.flush();
+        }
+    }
+
+    private static String sha256(File f) throws Exception {
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+        }
+        StringBuilder sb = new StringBuilder();
+        byte[] d = md.digest();
+        for (byte b : d) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    /** PendingIntent que recibe el resultado de la instalacion. */
+    private static IntentSender installSender(Context ctx, int sessionId) {
+        Intent i = new Intent(INSTALL_RESULT);
+        i.setPackage(ctx.getPackageName());
+        i.putExtra("session", sessionId);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_MUTABLE;
+        return PendingIntent.getBroadcast(ctx, sessionId, i, flags).getIntentSender();
+    }
+
+    private static void ensureInstallReceiver(Context ctx) {
+        if (installReceiver != null) return;
+        installReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent intent) {
+                int status = intent.getIntExtra(
+                        PackageInstaller.EXTRA_STATUS, -99);
+                String msg = intent.getStringExtra(
+                        PackageInstaller.EXTRA_STATUS_MESSAGE);
+                Log.i("OpenCodeDevice", "instalacion: status=" + status
+                        + (msg == null ? "" : " (" + msg + ")"));
+                // Android 12+: el sistema pide accion del usuario y manda el
+                // intent de confirmacion. Hay que lanzarlo para que aparezca
+                // el instalador del sistema (el usuario pulsa "Instalar").
+                if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                    Intent confirm = null;
+                    try {
+                        Object o = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                        if (o instanceof Intent) confirm = (Intent) o;
+                    } catch (Exception ignored) {
+                    }
+                    if (confirm != null) {
+                        confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        launchConfirm(c, confirm);
+                        return;
+                    }
+                    // Sin intent de confirmacion: el sistema no puede
+                    // mostrarla. Se reintenta sin pedirla (el usuario ya
+                    // concedio el permiso de instalar apps desconocidas).
+                    if (!pendingRetried && Build.VERSION.SDK_INT >= 31
+                            && pendingPath != null && !pendingPath.isEmpty()) {
+                        pendingRetried = true;
+                        final Context app = c.getApplicationContext();
+                        new Thread(() -> {
+                            try {
+                                Log.i("OpenCodeDevice", "reintento sin dialogo");
+                                startSession(app, new File(pendingPath), true);
+                            } catch (Exception e) {
+                                Log.i("OpenCodeDevice", "reintento fallo: " + e);
+                            }
+                        }).start();
+                    }
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(INSTALL_RESULT);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                ctx.registerReceiver(installReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                ctx.registerReceiver(installReceiver, filter);
+            }
+        } catch (Exception ignored) {
+            installReceiver = null;
+        }
+    }
+
+    /**
+     * Abre la pantalla de confirmacion del instalador del sistema. Si la app
+     * no esta delante, Android 10+ no deja abrirla: se avisa con una
+     * notificacion que el usuario toca (y ahi si se abre).
+     */
+    private static void launchConfirm(Context ctx, Intent confirm) {
+        if (foreground) {
+            MAIN.post(() -> {
+                try {
+                    ctx.startActivity(confirm);
+                } catch (Exception e) {
+                    Log.i("OpenCodeDevice", "no se pudo abrir el instalador: " + e);
+                }
+            });
+            return;
+        }
+        try {
+            ensureChannel(ctx);
+            int id = 4300 + Math.abs(confirm.hashCode()) % 500;
+            PendingIntent pi = PendingIntent.getActivity(ctx, id, confirm,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            NotificationCompat.Builder b =
+                    new NotificationCompat.Builder(ctx, CHANNEL)
+                            .setSmallIcon(R.drawable.ic_stat_opencode)
+                            .setContentTitle("Instalar aplicacion")
+                            .setContentText("Toca para instalarla")
+                            .setContentIntent(pi)
+                            .setAutoCancel(true)
+                            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION);
+            NotificationManager nm = (NotificationManager)
+                    ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(id, b.build());
+        } catch (Exception e) {
+            Log.i("OpenCodeDevice", "aviso de instalacion fallo: " + e);
+        }
     }
 }
