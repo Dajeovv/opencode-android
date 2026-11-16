@@ -85,7 +85,10 @@ public final class CommandResolver {
      * toybox del sistema; GNU grep ademas soporta mas expresiones.
      */
     private static final Set<String> PREFER_PREFIX = new HashSet<>(Arrays.asList(
-            "find", "grep"
+            // "am" del prefijo es un envoltorio: el del sistema nunca puede
+            // abrir apps (se presenta como com.android.shell y el framework
+            // rechaza el UID), asi que el nuestro tiene que ganar.
+            "find", "grep", "am"
     ));
 
     /** Nombres que no se pueden definir como funcion (builtins o palabras raras). */

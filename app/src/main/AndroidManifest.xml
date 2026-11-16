@@ -34,6 +34,25 @@
         <package android:name="com.topjohnwu.magisk" />
         <package android:name="me.weishu.kernelsu" />
         <package android:name="me.bmax.apatch" />
+        <!-- Para que el agente pueda abrir el navegador y cualquier app
+             instalada. Sin esto, Android 11+ los oculta (filtrado de
+             visibilidad) y no se pueden ni localizar ni arrancar. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="content" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application

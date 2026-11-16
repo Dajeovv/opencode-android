@@ -281,6 +281,8 @@ public class MainActivity extends AppCompatActivity {
             // recorte (recorte=0) hay que reservarlo entero, si no la
             // cabecera de la pagina se queda debajo de la barra de estado.
             int need = Math.max(0, top - cutout);
+            Log.d("OpenCode", "insets: barra=" + top + " recorte=" + cutout
+                    + " falta=" + need);
             if (ime != imeBottom || need != statusTop) {
                 imeBottom = ime;
                 statusTop = need;
@@ -982,6 +984,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         appForeground = false;
         uiForeground = false;
+        // El agente solo puede abrir apps mientras la app esta visible
+        // (Android 10+ bloquea arrancar actividades en segundo plano).
+        DeviceApi.setForeground(false);
         saveFabPos();
         super.onPause();
     }
@@ -991,6 +996,7 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         appForeground = true;
         uiForeground = true;
+        DeviceApi.setForeground(true);
         web.onResume();
         web.resumeTimers();
         checkStatus(false);

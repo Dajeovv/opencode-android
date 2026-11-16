@@ -693,7 +693,11 @@ public final class LocalToolbox {
                 {"termux-volume", "volume"},
                 {"termux-wifi-connectioninfo", "wifi-info"},
                 {"termux-sensor", "sensor"},
-                {"termux-sensor-list", "sensor-list"}
+                {"termux-sensor-list", "sensor-list"},
+                {"termux-open-url", "open-url"},
+                {"termux-open-app", "open-app"},
+                {"termux-open-file", "open-file"},
+                {"termux-list-apps", "list-apps"}
         };
         for (String[] c : cmds) {
             File f = new File(bin, c[0]);
@@ -705,6 +709,53 @@ public final class LocalToolbox {
         }
 
         // Comandos con root: el agente los manda por HTTP y la app usa su.
+        // "am start" del sistema no vale desde una app normal: el comando se
+        // presenta como com.android.shell (UID 2000) y el framework rechaza la
+        // llamada porque el UID que la hace no es ese. Este envoltorio lo
+        // traduce a la API de la app, que si puede abrir apps porque lo hace
+        // en su nombre y con sus permisos.
+        File am = new File(bin, "am");
+        try {
+            // Si hay un enlace simbolico a /system/bin/am hay que borrarlo
+            // antes de escribir: el fichero se escribiria a traves del enlace.
+            java.nio.file.Files.deleteIfExists(am.toPath());
+        } catch (Exception ignored) {
+        }
+        String amBody = "#!/system/bin/sh\n"
+                + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
+                + "# am start -> la API de la app (el am del sistema no vale).\n"
+                + "SUB=$1\n"
+                + "[ $# -gt 0 ] && shift\n"
+                + "case \"$SUB\" in\n"
+                + "  start|start-activity)\n"
+                + "    DATA=\"\"; COMP=\"\"\n"
+                + "    while [ $# -gt 0 ]; do\n"
+                + "      case \"$1\" in\n"
+                + "        --data=*) DATA=${1#--data=} ;;\n"
+                + "        --data|-d) shift; DATA=${1:-} ;;\n"
+                + "        --component=*) COMP=${1#--component=} ;;\n"
+                + "        --component|-n) shift; COMP=${1:-} ;;\n"
+                + "        -a|--action|--type|-t|-c|--category|--user|--display|-e|--es"
+                + "|--ei|--el|--ez|--ed|--esa|--f|--selector|--uri) shift ;;\n"
+                + "        *) : ;;\n"
+                + "      esac\n"
+                + "      shift\n"
+                + "    done\n"
+                + "    if [ -n \"$COMP\" ]; then\n"
+                + "      exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" open-app \"$COMP\"\n"
+                + "    fi\n"
+                + "    if [ -n \"$DATA\" ]; then\n"
+                + "      exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" open-url \"$DATA\"\n"
+                + "    fi\n"
+                + "    echo '{\"error\":\"am start necesita -d <url> o -n <paquete/actividad>\"}' >&2\n"
+                + "    exit 1\n"
+                + "    ;;\n"
+                + "  *)\n"
+                + "    exec /system/bin/am \"$SUB\" \"$@\"\n"
+                + "    ;;\n"
+                + "esac\n";
+        writeScript(am, amBody);
+
         // Comando "opencode": el agente no tenia forma de saber que version
         // del runtime estaba usando (no hay binario en el PATH). Este
         // envoltorio la dice y, con otros argumentos, pasa al binario real.
@@ -887,6 +938,26 @@ public final class LocalToolbox {
                 + "termux-toast, termux-vibrate, termux-brightness, termux-volume,\n"
                 + "termux-wifi-connectioninfo, termux-sensor and termux-sensor-list talk\n"
                 + "to the phone app.\n"
+                + "\n"
+                + "## Opening apps\n"
+                + "You can open apps and links on the phone:\n"
+                + "\n"
+                + "    termux-open-url <url>          open a link (browser)\n"
+                + "    termux-open-app <package>      open an installed app\n"
+                + "    termux-open-file <path>        open a file with any viewer\n"
+                + "    termux-list-apps               list the installed apps\n"
+                + "\n"
+                + "`am start -d <url>` and `am start -n <package/activity>` work too:\n"
+                + "the app replaces the system `am`, whose real one always fails here\n"
+                + "(it identifies as com.android.shell and Android rejects the UID).\n"
+                + "Do not report that opening apps is impossible.\n"
+                + "\n"
+                + "Package ids are exact: run termux-list-apps to see them (for\n"
+                + "example com.brave.browser, not \"brave\"). A package that is not\n"
+                + "listed has no launchable activity.\n"
+                + "\n"
+                + "If the app is not on screen the request becomes a notification:\n"
+                + "the user taps it and the app opens.\n"
                 + "\n"
                 + "## Battery\n"
                 + batteryNotes;

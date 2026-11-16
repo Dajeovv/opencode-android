@@ -1,10 +1,16 @@
 package com.opencode.launcher;
 
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -17,6 +23,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.ProxyInfo;
 import android.net.RouteInfo;
+import android.net.Uri;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiInfo;
@@ -28,11 +35,16 @@ import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.util.Log;
 import android.widget.Toast;
+
+import androidx.core.app.NotificationCompat;
+import androidx.core.content.FileProvider;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -77,6 +89,14 @@ public final class DeviceApi {
                     return sensorList(ctx);
                 case "sensor":
                     return sensorSample(ctx, args);
+                case "open-url":
+                    return openUrl(ctx, arg(args, 0));
+                case "open-app":
+                    return openApp(ctx, args);
+                case "open-file":
+                    return openFile(ctx, arg(args, 0));
+                case "list-apps":
+                    return listApps(ctx);
                 default:
                     return null;
             }
@@ -682,5 +702,230 @@ public final class DeviceApi {
         if (n.startsWith("grav")) return Sensor.TYPE_GRAVITY;
         if (n.startsWith("linear")) return Sensor.TYPE_LINEAR_ACCELERATION;
         return -1;
+    }
+
+    // ---------------------------------------------------------- abrir apps
+
+    /**
+     * El comando "am" del sistema no vale para el agente: se presenta como
+     * com.android.shell (UID 2000) y el framework exige que el UID que lo
+     * llama sea ese mismo (assertPackageMatchesCallingUid). La app si puede
+     * lanzar actividades: lo hace con sus propios permisos y en su nombre.
+     */
+
+    /** Canal de avisos para abrir apps cuando la app no esta en primer plano. */
+    private static final String CHANNEL = "opencode-open";
+
+    /** La app esta visible: se puede arrancar otra actividad directamente. */
+    private static volatile boolean foreground = false;
+
+    /** Lo llama MainActivity al ir y volver del primer plano. */
+    public static void setForeground(boolean f) {
+        foreground = f;
+    }
+
+    private static String openUrl(Context ctx, String url) throws Exception {
+        JSONObject o = new JSONObject();
+        try {
+            String u = url == null ? "" : url.trim();
+            if (u.isEmpty()) {
+                o.put("error", "no url");
+                return o.toString();
+            }
+            if (!u.matches("(?i)^[a-z][a-z0-9+.-]*:.*")) u = "http://" + u;
+            Uri uri = Uri.parse(u);
+            if (uri.getScheme() == null) {
+                o.put("error", "bad url");
+                return o.toString();
+            }
+            Intent i;
+            if ("file".equalsIgnoreCase(uri.getScheme())) {
+                // Android 10+ no deja pasar URIs file:// a otra app: se
+                // sirve el fichero con el FileProvider de la app.
+                String path = uri.getPath();
+                File f = path == null ? null : new File(path);
+                if (f == null || !f.isFile()) {
+                    o.put("error", "not found: " + path);
+                    return o.toString();
+                }
+                Uri content = FileProvider.getUriForFile(ctx,
+                        ctx.getPackageName() + ".fileprovider", f);
+                i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(content, "*/*");
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                        | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                i = new Intent(Intent.ACTION_VIEW, uri);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            }
+            o.put("status", launch(ctx, i, "OpenCode", u));
+            return o.toString();
+        } catch (Exception e) {
+            return err(String.valueOf(e.getMessage()));
+        }
+    }
+
+    private static String openApp(Context ctx, List<String> args) throws Exception {
+        JSONObject o = new JSONObject();
+        try {
+            String spec = arg(args, 0);
+            if (spec == null || spec.trim().isEmpty()) {
+                o.put("error", "no package");
+                return o.toString();
+            }
+            spec = spec.trim();
+            Intent i = null;
+            if (spec.contains("/")) {
+                ComponentName c = ComponentName.unflattenFromString(spec);
+                if (c == null) {
+                    o.put("error", "bad component");
+                    return o.toString();
+                }
+                i = new Intent(Intent.ACTION_MAIN);
+                i.setComponent(c);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            } else {
+                i = ctx.getPackageManager().getLaunchIntentForPackage(spec);
+                if (i == null) {
+                    // Sin actividad de inicio: se busca la principal a mano.
+                    try {
+                        List<ResolveInfo> ris = ctx.getPackageManager()
+                                .queryIntentActivities(new Intent(Intent.ACTION_MAIN)
+                                        .addCategory(Intent.CATEGORY_LAUNCHER), 0);
+                        for (ResolveInfo ri : ris) {
+                            if (spec.equals(ri.activityInfo.packageName)) {
+                                i = new Intent(Intent.ACTION_MAIN);
+                                i.setClassName(ri.activityInfo.packageName,
+                                        ri.activityInfo.name);
+                                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                break;
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            if (i == null) {
+                o.put("error", "not launchable: " + spec);
+                return o.toString();
+            }
+            if (i.getComponent() == null) {
+                i.setComponent(i.resolveActivity(ctx.getPackageManager()));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            }
+            String label = spec;
+            try {
+                android.content.pm.ApplicationInfo ai =
+                        ctx.getPackageManager().getApplicationInfo(spec, 0);
+                label = ctx.getPackageManager().getApplicationLabel(ai).toString();
+            } catch (Exception ignored) {
+            }
+            o.put("status", launch(ctx, i, "Abrir " + label, label));
+            return o.toString();
+        } catch (Exception e) {
+            return err(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /** Abre un fichero del telefono con la app que lo pueda mostrar. */
+    private static String openFile(Context ctx, String path) throws Exception {
+        JSONObject o = new JSONObject();
+        try {
+            if (path == null || path.trim().isEmpty()) {
+                o.put("error", "no path");
+                return o.toString();
+            }
+            File f = new File(path.trim());
+            if (!f.isFile()) {
+                o.put("error", "not found: " + path);
+                return o.toString();
+            }
+            Uri uri = FileProvider.getUriForFile(ctx,
+                    ctx.getPackageName() + ".fileprovider", f);
+            String mime = ctx.getContentResolver().getType(uri);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, mime == null ? "*/*" : mime);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            o.put("status", launch(ctx, i, "Abrir " + f.getName(), f.getAbsolutePath()));
+            return o.toString();
+        } catch (Exception e) {
+            return err(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /** Apps que se pueden abrir: el agente las necesita por nombre. */
+    private static String listApps(Context ctx) throws Exception {
+        JSONObject o = new JSONObject();
+        try {
+            PackageManager pm = ctx.getPackageManager();
+            List<ResolveInfo> ris = pm.queryIntentActivities(
+                    new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
+            JSONArray arr = new JSONArray();
+            for (ResolveInfo ri : ris) {
+                JSONObject o2 = new JSONObject();
+                o2.put("package", ri.activityInfo.packageName);
+                o2.put("activity", ri.activityInfo.name);
+                try {
+                    o2.put("name", ri.loadLabel(pm).toString());
+                } catch (Exception ignored) {
+                }
+                arr.put(o2);
+            }
+            o.put("apps", arr);
+            return o.toString();
+        } catch (Exception e) {
+            return err(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /**
+     * Arranca una actividad. Android 10+ no deja lanzar actividades desde
+     * segundo plano: si la app no esta visible se avisa con una notificacion
+     * que el usuario toca (y ahi si se abre).
+     */
+    private static String launch(Context ctx, Intent intent, String title, String text) {
+        try {
+            if (foreground) {
+                MAIN.post(() -> {
+                    try {
+                        ctx.startActivity(intent);
+                    } catch (Exception e) {
+                        Log.w("OpenCodeDevice", "no se pudo abrir: " + e);
+                    }
+                });
+                return "opened";
+            }
+            ensureChannel(ctx);
+            int id = 4200 + Math.abs(title.hashCode() + text.hashCode()) % 500;
+            PendingIntent p = PendingIntent.getActivity(ctx, id, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_stat_opencode)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+                    .setContentIntent(p)
+                    .setAutoCancel(true)
+                    .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT);
+            NotificationManager nm = (NotificationManager)
+                    ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return "error: no notifications";
+            nm.notify(id, b.build());
+            return "notification";
+        } catch (Exception e) {
+            return "error: " + e;
+        }
+    }
+
+    private static void ensureChannel(Context ctx) {
+        if (Build.VERSION.SDK_INT < 26) return;
+        NotificationManager nm = (NotificationManager)
+                ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        NotificationChannel ch = new NotificationChannel(CHANNEL, "OpenCode",
+                NotificationManager.IMPORTANCE_DEFAULT);
+        ch.setDescription("Abrir apps y enlaces desde el agente");
+        nm.createNotificationChannel(ch);
     }
 }

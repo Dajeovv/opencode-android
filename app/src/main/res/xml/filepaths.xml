@@ -2,4 +2,7 @@
 <paths>
     <external-path name="dl" path="Download/" />
     <external-files-path name="updates" path="updates/" />
+    <!-- Los ficheros del propio agente (workspace, home) se pueden abrir con
+         el visor que elija el usuario. -->
+    <files-path name="appfiles" path="." />
 </paths>
