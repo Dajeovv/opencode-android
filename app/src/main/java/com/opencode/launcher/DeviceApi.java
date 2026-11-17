@@ -107,6 +107,8 @@ public final class DeviceApi {
                     return installStatus();
                 case "alias":
                     return saveAlias(ctx, args);
+                case "install-mode":
+                    return installMode(ctx);
                 default:
                     return null;
             }
@@ -1297,6 +1299,27 @@ public final class DeviceApi {
         } catch (Exception e) {
             return err(String.valueOf(e.getMessage()));
         }
+    }
+
+    /**
+     * Como se instalara: con root (silencioso, sin dialogo) o con el dialogo
+     * del sistema (el usuario tiene que pulsar "Instalar"). Android 8+ exige
+     * esa confirmacion siempre que la instalacion la pide una app.
+     */
+    private static String installMode(Context ctx) throws Exception {
+        JSONObject o = new JSONObject();
+        boolean root = RootShell.enabled(ctx) && RootShell.available()
+                && RootShell.isGranted(ctx);
+        o.put("ok", true);
+        o.put("mode", root ? "root" : "dialog");
+        o.put("silent", root);
+        o.put("root", RootShell.state(ctx));
+        if (!root) {
+            o.put("message", "the user has to press Install in the system "
+                    + "dialog; the app does everything else (download, check, "
+                    + "stage and open the app afterwards)");
+        }
+        return o.toString();
     }
 
     /**
