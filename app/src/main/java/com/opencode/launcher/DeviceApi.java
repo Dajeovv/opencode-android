@@ -1260,8 +1260,35 @@ public final class DeviceApi {
             pendingRetried = false;
             // Tercer argumento "open": al terminar de instalarse, se abre.
             pendingOpen = arg(args, 2).trim().equalsIgnoreCase("open");
+
+            // 1) Con root: instalacion silenciosa, sin que el usuario pulse
+            //    nada. El APK se copia a /data/local/tmp porque el servidor
+            //    del sistema no puede leer el directorio de datos de la app.
+            String rootOut = installWithRoot(ctx, f);
+            if (rootOut != null) {
+                o.put("mode", "root");
+                o.put("output", rootOut);
+                boolean ok = rootOut.contains("Success");
+                o.put("ok", ok);
+                o.put("status", ok ? "installed" : "failed");
+                if (!pkg.isEmpty()) o.put("package", pkg);
+                if (ok) {
+                    lastInstall = "{\"ok\":true,\"status\":\"installed\",\"package\":"
+                            + jsonString(pkg) + ",\"mode\":\"root\"}";
+                    if (pendingOpen) openInstalled(ctx, pkg);
+                } else {
+                    lastInstall = "{\"ok\":false,\"status\":\"failed\",\"package\":"
+                            + jsonString(pkg) + ",\"output\":" + jsonString(rootOut) + "}";
+                }
+                return o.toString();
+            }
+
             ensureInstallReceiver(ctx);
-            int sessionId = startSession(ctx, f, false);
+            // En Android 12+ se pide que la sesion no exija accion del
+            // usuario: el permiso de "instalar apps desconocidas" ya es el
+            // consentimiento. Si el sistema aun asi la pide, el receptor
+            // lanza la pantalla de confirmacion.
+            int sessionId = startSession(ctx, f, true);
             o.put("status", "installing");
             o.put("session", sessionId);
             if (!pkg.isEmpty()) o.put("package", pkg);
@@ -1269,6 +1296,48 @@ public final class DeviceApi {
             return o.toString();
         } catch (Exception e) {
             return err(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /**
+     * Instalacion silenciosa con root (su): el APK se copia a
+     * /data/local/tmp, que es donde el servidor del sistema puede leerlo, y se
+     * instala con pm. Sin esto hay que pedirle al usuario que pulse
+     * "Instalar" en el dialogo del sistema.
+     *
+     * Devuelve null si no hay root concedido.
+     */
+    private static String installWithRoot(Context ctx, File f) {
+        try {
+            if (!RootShell.enabled(ctx) || !RootShell.available()) return null;
+            String q = "'" + f.getAbsolutePath().replace("'", "'\\''") + "'";
+            String cmd = "cp " + q + " /data/local/tmp/oc-install.apk && "
+                    + "pm install -r -g /data/local/tmp/oc-install.apk; "
+                    + "R=$?; rm -f /data/local/tmp/oc-install.apk; exit $R";
+            String out = RootShell.run(ctx, cmd, 300000);
+            if (out == null) return null;
+            return out.trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Abre una app ya instalada (tras instalarla). */
+    private static void openInstalled(Context ctx, String pkg) {
+        try {
+            Intent launch = new Intent(Intent.ACTION_MAIN);
+            launch.addCategory(Intent.CATEGORY_LAUNCHER);
+            launch.setPackage(pkg);
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            MAIN.post(() -> {
+                try {
+                    ctx.startActivity(launch);
+                } catch (Exception e) {
+                    Log.i("OpenCodeDevice", "no se pudo abrir: " + e);
+                }
+            });
+        } catch (Exception e) {
+            Log.i("OpenCodeDevice", "no se pudo abrir: " + e);
         }
     }
 
@@ -1359,21 +1428,7 @@ public final class DeviceApi {
                             + jsonString(pendingPkg) + "}";
                     // Con "open" al final: al terminar de instalarse, se abre.
                     if (pendingOpen && pendingPkg != null && !pendingPkg.isEmpty()) {
-                        try {
-                            Intent launch = new Intent(Intent.ACTION_MAIN);
-                            launch.addCategory(Intent.CATEGORY_LAUNCHER);
-                            launch.setPackage(pendingPkg);
-                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            MAIN.post(() -> {
-                                try {
-                                    ctx.startActivity(launch);
-                                } catch (Exception e) {
-                                    Log.i("OpenCodeDevice", "no se pudo abrir: " + e);
-                                }
-                            });
-                        } catch (Exception e) {
-                            Log.i("OpenCodeDevice", "no se pudo abrir: " + e);
-                        }
+                        openInstalled(ctx, pendingPkg);
                     }
                 } else if (status != PackageInstaller.STATUS_PENDING_USER_ACTION) {
                     lastInstall = "{\"ok\":false,\"status\":\"failed\",\"code\":" + status
