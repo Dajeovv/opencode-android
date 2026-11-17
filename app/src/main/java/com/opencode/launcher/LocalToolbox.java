@@ -699,7 +699,8 @@ public final class LocalToolbox {
                 {"termux-open-file", "open-file"},
                 {"termux-list-apps", "list-apps"},
                 {"termux-install-apk", "install-apk"},
-                {"termux-install-status", "install-status"}
+                {"termux-install-status", "install-status"},
+                {"termux-alias", "alias"}
         };
         for (String[] c : cmds) {
             File f = new File(bin, c[0]);
@@ -709,6 +710,29 @@ public final class LocalToolbox {
                     + " \"$@\"\n";
             writeScript(f, body);
         }
+
+        // "monkey -p <paquete>" es como se lanza una app en Termux, pero aqui
+        // no hace nada (el monkey del sistema necesita INJECT_EVENTS). Este
+        // envoltorio lo traduce a la API de la app, que si puede abrirla.
+        File monkey = new File(bin, "monkey");
+        try {
+            java.nio.file.Files.deleteIfExists(monkey.toPath());
+        } catch (Exception ignored) {
+        }
+        String monkeyBody = "#!/system/bin/sh\n"
+                + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
+                + "# monkey -p <paquete> [-c <categoria>] [n]: abre la app.\n"
+                + "PKG=\"\"\n"
+                + "PREV=\"\"\n"
+                + "for a in \"$@\"; do\n"
+                + "  if [ \"$PREV\" = \"-p\" ]; then PKG=$a; fi\n"
+                + "  PREV=$a\n"
+                + "done\n"
+                + "if [ -n \"$PKG\" ]; then\n"
+                + "  exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" open-app \"$PKG\"\n"
+                + "fi\n"
+                + "exec /system/bin/monkey \"$@\"\n";
+        writeScript(monkey, monkeyBody);
 
         // Envoltorio de "pm": "pm install" no puede funcionar desde la app
         // (el servidor del sistema no puede leer sus ficheros y el modo
@@ -756,13 +780,15 @@ public final class LocalToolbox {
                 + "[ $# -gt 0 ] && shift\n"
                 + "case \"$SUB\" in\n"
                 + "  start|start-activity)\n"
-                + "    DATA=\"\"; COMP=\"\"\n"
+                + "    DATA=\"\"; COMP=\"\"; PKG=\"\"\n"
                 + "    while [ $# -gt 0 ]; do\n"
                 + "      case \"$1\" in\n"
                 + "        --data=*) DATA=${1#--data=} ;;\n"
                 + "        --data|-d) shift; DATA=${1:-} ;;\n"
                 + "        --component=*) COMP=${1#--component=} ;;\n"
                 + "        --component|-n) shift; COMP=${1:-} ;;\n"
+                + "        --package=*) PKG=${1#--package=} ;;\n"
+                + "        --package|-p) shift; PKG=${1:-} ;;\n"
                 + "        -a|--action|--type|-t|-c|--category|--user|--display|-e|--es"
                 + "|--ei|--el|--ez|--ed|--esa|--f|--selector|--uri) shift ;;\n"
                 + "        *) : ;;\n"
@@ -772,10 +798,14 @@ public final class LocalToolbox {
                 + "    if [ -n \"$COMP\" ]; then\n"
                 + "      exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" open-app \"$COMP\"\n"
                 + "    fi\n"
+                + "    if [ -n \"$PKG\" ]; then\n"
+                + "      # am start -a MAIN -c LAUNCHER -p <paquete>: abrir la app.\n"
+                + "      exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" open-app \"$PKG\"\n"
+                + "    fi\n"
                 + "    if [ -n \"$DATA\" ]; then\n"
                 + "      exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" open-url \"$DATA\"\n"
                 + "    fi\n"
-                + "    echo '{\"error\":\"am start necesita -d <url> o -n <paquete/actividad>\"}' >&2\n"
+                + "    echo '{\"error\":\"am start necesita -d <url>, -n <paquete/actividad> o -p <paquete>\"}' >&2\n"
                 + "    exit 1\n"
                 + "    ;;\n"
                 + "  *)\n"
@@ -941,6 +971,19 @@ public final class LocalToolbox {
                 + "    termux-list-apps            list the installed apps\n"
                 + "    termux-install-apk <path>   install an APK\n"
                 + "    termux-install-status       state of the last install\n"
+                + "\n"
+                + "The app name is enough: termux-open-app brave opens\n"
+                + "com.brave.browser. `am start -n <pkg/activity>` and\n"
+                + "`monkey -p <pkg>` also work (they go through the app).\n"
+                + "\n"
+                + "If termux-open-app says \"not launchable\" but the app IS\n"
+                + "installed under another name (Fennec is Firefox, for\n"
+                + "example), teach the app the name once:\n"
+                + "\n"
+                + "    termux-alias firefox org.mozilla.fennec_fdroid\n"
+                + "\n"
+                + "From then on that name works. termux-list-apps shows every\n"
+                + "installed app with its name and package.\n"
                 + "\n"
                 + "Do not waste the turn trying these, they cannot work here:\n"
                 + "\n"

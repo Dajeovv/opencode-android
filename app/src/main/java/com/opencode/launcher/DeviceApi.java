@@ -105,6 +105,8 @@ public final class DeviceApi {
                     return installApk(ctx, args);
                 case "install-status":
                     return installStatus();
+                case "alias":
+                    return saveAlias(ctx, args);
                 default:
                     return null;
             }
@@ -782,6 +784,168 @@ public final class DeviceApi {
         }
     }
 
+    /**
+     * Nombres que dice la gente y los paquetes que pueden ser. El agente
+     * busca "firefox" y en F-Droid el paquete se llama org.mozilla.fennec_fdroid
+     * (el nombre "Fennec" no contiene "firefox"), asi que sin esta tabla
+     * conclude que la app no esta instalada.
+     *
+     * Es solo un atajo: la busqueda general (ver findApp) y los alias
+     * aprendidos (ver saveAlias) resuelven cualquier otra app.
+     */
+    private static final String[][] APP_ALIASES = {
+            {"firefox", "org.mozilla.firefox", "org.mozilla.fennec_fdroid", "org.mozilla.klar"},
+            {"chrome", "com.android.chrome"},
+            {"brave", "com.brave.browser"},
+            {"opera", "com.opera.browser"},
+            {"edge", "com.microsoft.emmx"},
+            {"yandex", "com.yandex.browser"},
+            {"duckduckgo", "com.duckduckgo.mobile.android"},
+            {"telegram", "org.telegram.messenger"},
+            {"whatsapp", "com.whatsapp"},
+            {"gmail", "com.google.android.gm"},
+            {"maps", "com.google.android.apps.maps"},
+            {"youtube", "com.google.android.youtube"},
+            {"spotify", "com.spotify.music"},
+            {"calculator", "com.android.calculator2"},
+            {"clock", "com.google.android.deskclock"},
+            {"settings", "com.android.settings"},
+            {"files", "com.android.documentsui"},
+            {"play store", "com.android.vending"},
+            {"playstore", "com.android.vending"},
+    };
+
+    /**
+     * Busca una app instalada por nombre: coincide con el paquete, con la
+     * etiqueta que se ve en el launcher o con las palabras de las dos.
+     * Devuelve null si no hay coincidencias claras.
+     */
+    private static String findApp(Context ctx, String query) {
+        String q = query == null ? "" : query.trim().toLowerCase(Locale.US);
+        if (q.isEmpty()) return null;
+        String qFlat = q.replaceAll("[^a-z0-9]", "");
+        List<ResolveInfo> ris = ctx.getPackageManager().queryIntentActivities(
+                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
+        String best = null;
+        int bestScore = 0;
+        int second = 0;
+        for (ResolveInfo ri : ris) {
+            String pkg = ri.activityInfo.packageName;
+            String label = "";
+            try {
+                label = ri.loadLabel(ctx.getPackageManager()).toString();
+            } catch (Exception ignored) {
+            }
+            int score = 0;
+            String pl = pkg.toLowerCase(Locale.US);
+            String ll = label.toLowerCase(Locale.US);
+            if (pl.equals(q) || ll.equals(q)) score += 10;
+            if (pl.contains(q) || ll.contains(q)) score += 5;
+            if (ll.replaceAll("[^a-z0-9]", "").equals(qFlat)) score += 6;
+            // palabras: "reloj" casa con DeskClock? no, pero "clocks" si.
+            for (String tok : q.split("[^a-z0-9]+")) {
+                if (tok.length() < 3) continue;
+                if (pl.contains(tok) || ll.contains(tok)) score += 4;
+            }
+            // cada palabra de la consulta dentro de la app (en cualquier orden)
+            String hay = pl + " " + ll.replaceAll("[^a-z0-9]", "");
+            boolean todas = true;
+            for (String tok : q.split("[^a-z0-9]+")) {
+                if (tok.length() < 3) continue;
+                if (!hay.contains(tok)) {
+                    todas = false;
+                    break;
+                }
+            }
+            if (todas) score += 3;
+            if (score > bestScore) {
+                second = bestScore;
+                bestScore = score;
+                best = pkg;
+            } else if (score > second) {
+                second = score;
+            }
+        }
+        // Con empate claro no se decide: se devuelven los candidatos.
+        if (best == null || bestScore < 4 || bestScore <= second) return null;
+        return best;
+    }
+
+    /** true si lo que dice el agente es ese nombre (o un paquete que lo lleva). */
+    private static boolean aliasMatches(String alias, String query) {
+        if (alias.equals(query)) return true;
+        // "org.mozilla.firefox" -> tokens {org, mozilla, firefox}: casa.
+        for (String tok : query.split("[^a-z0-9]+")) {
+            if (tok.equals(alias)) return true;
+        }
+        return false;
+    }
+
+    /** Alias aprendidos: "firefox=org.mozilla.fennec_fdroid". */
+    private static File aliasFile(Context ctx) {
+        return new File(ctx.getFilesDir(), "home/.config/opencode/app-aliases");
+    }
+
+    /** Guarda un alias para que el nombre que dice el usuario valga siempre. */
+    private static String saveAlias(Context ctx, List<String> args) throws Exception {
+        JSONObject o = new JSONObject();
+        String name = arg(args, 0).trim().toLowerCase(Locale.US);
+        String pkg = arg(args, 1).trim();
+        if (name.isEmpty() || pkg.isEmpty()) {
+            o.put("error", "usage: alias <name> <package>");
+            return o.toString();
+        }
+        File f = aliasFile(ctx);
+        File dir = f.getParentFile();
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            o.put("error", "no dir");
+            return o.toString();
+        }
+        StringBuilder sb = new StringBuilder();
+        try {
+            if (f.isFile()) {
+                java.util.List<String> lines = java.nio.file.Files.readAllLines(f.toPath());
+                for (String line : lines) {
+                    String t = line.trim();
+                    if (t.isEmpty() || t.startsWith("#")) continue;
+                    int eq = t.indexOf('=');
+                    if (eq <= 0) continue;
+                    if (t.substring(0, eq).trim().equals(name)) continue;
+                    sb.append(t).append('\n');
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        sb.append(name).append('=').append(pkg).append('\n');
+        try (java.io.FileWriter w = new java.io.FileWriter(f, false)) {
+            w.write(sb.toString());
+        }
+        o.put("ok", true);
+        o.put("alias", name);
+        o.put("package", pkg);
+        return o.toString();
+    }
+
+    /** Alias aprendidos (los que el agente ha ido guardando). */
+    private static String learnedAlias(Context ctx, String query) {
+        File f = aliasFile(ctx);
+        if (!f.isFile()) return null;
+        String q = query == null ? "" : query.trim().toLowerCase(Locale.US);
+        try {
+            for (String line : java.nio.file.Files.readAllLines(f.toPath())) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith("#")) continue;
+                int eq = t.indexOf('=');
+                if (eq <= 0) continue;
+                if (t.substring(0, eq).trim().equals(q)) {
+                    return t.substring(eq + 1).trim();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
     private static String openApp(Context ctx, List<String> args) throws Exception {
         JSONObject o = new JSONObject();
         try {
@@ -803,6 +967,43 @@ public final class DeviceApi {
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             } else {
                 i = ctx.getPackageManager().getLaunchIntentForPackage(spec);
+                if (i == null) {
+                    // 1) alias aprendido (el agente lo guardo antes).
+                    String learned = learnedAlias(ctx, spec);
+                    if (learned != null) {
+                        Intent cand = ctx.getPackageManager()
+                                .getLaunchIntentForPackage(learned);
+                        if (cand != null) {
+                            i = cand;
+                            spec = learned;
+                        }
+                    }
+                }
+                if (i == null) {
+                    // 2) alias que ya conoce la app.
+                    String low = spec.toLowerCase(Locale.US);
+                    for (String[] row : APP_ALIASES) {
+                        if (!aliasMatches(row[0], low)) continue;
+                        for (int k = 1; k < row.length; k++) {
+                            Intent cand = ctx.getPackageManager()
+                                    .getLaunchIntentForPackage(row[k]);
+                            if (cand != null) {
+                                i = cand;
+                                spec = row[k];
+                                break;
+                            }
+                        }
+                        if (i != null) break;
+                    }
+                }
+                if (i == null) {
+                    // 3) busqueda general por nombre o etiqueta.
+                    String found = findApp(ctx, spec);
+                    if (found != null) {
+                        spec = found;
+                        i = ctx.getPackageManager().getLaunchIntentForPackage(found);
+                    }
+                }
                 if (i == null) {
                     // Sin actividad de inicio: se busca la principal a mano.
                     try {
@@ -837,7 +1038,19 @@ public final class DeviceApi {
                 label = ctx.getPackageManager().getApplicationLabel(ai).toString();
             } catch (Exception ignored) {
             }
-            o.put("status", launch(ctx, i, "Abrir " + label, label));
+            String status = launch(ctx, i, "Abrir " + label, label);
+            o.put("status", status);
+            // Que paquete se ha resuelto: asi el agente aprende el nombre
+            // real y no vuelve a buscarlo.
+            o.put("package", spec);
+            o.put("name", label);
+            if ("notification".equals(status)) {
+                o.put("message", "OpenCode is in the background: the user has to "
+                        + "tap the notification to open " + label
+                        + ". The app was found.");
+            } else if ("opened".equals(status)) {
+                o.put("message", label + " is open");
+            }
             return o.toString();
         } catch (Exception e) {
             return err(String.valueOf(e.getMessage()));

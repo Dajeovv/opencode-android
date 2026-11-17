@@ -90,7 +90,9 @@ public final class CommandResolver {
             // rechaza el UID), asi que el nuestro tiene que ganar.
             // "pm" igual: el nuestro explica que "pm install" no puede
             // funcionar y a que comando hay que ir.
-            "find", "grep", "am", "pm"
+            // "monkey" tambien: el del sistema necesita INJECT_EVENTS y no
+            // hace nada; el nuestro abre la app.
+            "find", "grep", "am", "pm", "monkey"
     ));
 
     /** Nombres que no se pueden definir como funcion (builtins o palabras raras). */
