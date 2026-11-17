@@ -972,6 +972,8 @@ public final class DeviceApi {
     private static String pendingSha = "";
     private static String pendingPkg = "";
     private static boolean pendingRetried = false;
+    /** Abrir la app en cuanto termine de instalarse. */
+    private static boolean pendingOpen = false;
 
     /** Como termino la ultima instalacion (para que el agente lo pregunte). */
     private static volatile String lastInstall = "{\"ok\":true,\"status\":\"none\"}";
@@ -1043,6 +1045,8 @@ public final class DeviceApi {
             pendingSha = sha;
             pendingPkg = pkg;
             pendingRetried = false;
+            // Tercer argumento "open": al terminar de instalarse, se abre.
+            pendingOpen = arg(args, 2).trim().equalsIgnoreCase("open");
             ensureInstallReceiver(ctx);
             int sessionId = startSession(ctx, f, false);
             o.put("status", "installing");
@@ -1140,6 +1144,24 @@ public final class DeviceApi {
                 if (status == PackageInstaller.STATUS_SUCCESS) {
                     lastInstall = "{\"ok\":true,\"status\":\"installed\",\"package\":"
                             + jsonString(pendingPkg) + "}";
+                    // Con "open" al final: al terminar de instalarse, se abre.
+                    if (pendingOpen && pendingPkg != null && !pendingPkg.isEmpty()) {
+                        try {
+                            Intent launch = new Intent(Intent.ACTION_MAIN);
+                            launch.addCategory(Intent.CATEGORY_LAUNCHER);
+                            launch.setPackage(pendingPkg);
+                            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            MAIN.post(() -> {
+                                try {
+                                    ctx.startActivity(launch);
+                                } catch (Exception e) {
+                                    Log.i("OpenCodeDevice", "no se pudo abrir: " + e);
+                                }
+                            });
+                        } catch (Exception e) {
+                            Log.i("OpenCodeDevice", "no se pudo abrir: " + e);
+                        }
+                    }
                 } else if (status != PackageInstaller.STATUS_PENDING_USER_ACTION) {
                     lastInstall = "{\"ok\":false,\"status\":\"failed\",\"code\":" + status
                             + ",\"message\":" + jsonString(msg == null ? "" : msg)
