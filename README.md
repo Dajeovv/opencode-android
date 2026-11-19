@@ -49,7 +49,7 @@
 |---|---|---|
 | **Package** | `com.opencode.launcher.next` | `com.opencode.android` |
 | **opencode** | 1.19.4 (updates within 1.x) | 2.2.0 (updates within 2.x) |
-| **Terminal** | — | Integrated shell (pkg, apt, git, python) |
+| **Terminal** | — | Integrated shell (pkg, apt, git, python…) |
 | **WARP** | — | Cloudflare WARP for opencode.ai |
 | **Remote server** | — | Connect to a PC via QR code or pairing link |
 | **Install** | Update in place from 4.0.x | Fresh install, side by side with v1 |
