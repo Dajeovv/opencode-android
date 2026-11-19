@@ -21,7 +21,7 @@
   <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.4"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
 </p>
 
-<p align="center"><sub><b>v2</b> new UI &nbsp;·&nbsp; opencode 2.x &nbsp;·&nbsp; 175 MB &nbsp;&nbsp;|&nbsp;&nbsp; <b>v1</b> classic UI &nbsp;·&nbsp; opencode 1.x &nbsp;·&nbsp; 142 MB</sub></p>
+<p align="center"><sub><b>v2</b> new UI &nbsp;·&nbsp; opencode 2.x &nbsp;&nbsp;|&nbsp;&nbsp; <b>v1</b> classic UI &nbsp;·&nbsp; opencode 1.x</sub></p>
 
 <p align="center">
   <code>no Termux</code> <code>no PC</code> <code>root optional</code>
