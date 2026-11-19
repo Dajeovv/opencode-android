@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/Dajeovv/opencode-android/releases"><img src="https://img.shields.io/github/v/release/Dajeovv/opencode-android?filter=v5.*&amp;style=flat&amp;label=v2&amp;labelColor=21262d&amp;color=7C5CFF" alt="Latest v2 release"></a>
   <a href="https://github.com/Dajeovv/opencode-android/releases"><img src="https://img.shields.io/github/v/release/Dajeovv/opencode-android?filter=v4.*&amp;style=flat&amp;label=v1&amp;labelColor=21262d&amp;color=7C5CFF" alt="Latest v1 release"></a>
-  <img src="https://img.shields.io/badge/opencode-2.2.0%20%2F%201.19.4%20bundled-30363d?style=flat&amp;labelColor=21262d" alt="opencode 2.2.0 / 1.19.4 bundled">
+  <img src="https://img.shields.io/badge/opencode-2.2.0%2B%20%2F%201.19.4%2B%20bundled-30363d?style=flat&amp;labelColor=21262d" alt="opencode 2.2.0+ / 1.19.4+ bundled (updates to latest)">
   <img src="https://img.shields.io/badge/android-8%2B-30363d?style=flat&amp;labelColor=21262d" alt="Android 8+">
   <img src="https://img.shields.io/badge/arch-arm64-30363d?style=flat&amp;labelColor=21262d" alt="arm64">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-30363d?style=flat&amp;labelColor=21262d" alt="MIT"></a>
@@ -18,7 +18,7 @@
 <p align="center">
   <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.3"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.4"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
+  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
 </p>
 
 <p align="center"><sub><b>v2</b> new UI &nbsp;·&nbsp; opencode 2.x &nbsp;&nbsp;|&nbsp;&nbsp; <b>v1</b> classic UI &nbsp;·&nbsp; opencode 1.x</sub></p>
@@ -74,6 +74,8 @@ Both editions use the same release signing key, so future updates install over t
 - **Extensible.** `pkg install clang`, `rust`, `go`, `ffmpeg`, `cmake`… straight from the chat.
 - **Phone access.** Battery, clipboard, sensors, Wi-Fi, brightness, volume, toasts, and vibration through `termux-*` commands.
 - **Share to opencode.** Send text or files from any app, review the preview, choose a new or existing conversation, and add an optional instruction.
+- **Integrated terminal.** A real interactive shell inside the app: pkg, apt, git, python and more, with touch scrolling.
+- **Optional WARP.** Route opencode.ai traffic through Cloudflare WARP, toggle it from the controls menu.
 - **Self-updating within its channel.** opencode and the app update from GitHub Releases; opencode updates verify the checksum and roll back if the new binary does not start.
 - **Watchdog and notifications.** Optional restart/notify if the server goes down; boot start; daily update check.
 - **Optional root.** If the phone is rooted, the app can request `su` for commands that need it. Root is not required.
@@ -83,7 +85,7 @@ Both editions use the same release signing key, so future updates install over t
 
 - Android 8.0+ (API 26), **arm64**.
 - Internet access. The first run installs the npm dependencies and the package index; updates use it too.
-- **v2:** ~175 MB download; **v1:** ~142 MB download. The toolbox takes ~200 MB more once unpacked.
+- The toolbox takes ~200 MB more once unpacked.
 - No Termux, no PC. Root is optional.
 
 ## Installation
@@ -100,21 +102,15 @@ v2 uses its own package and its own private storage. It does not read v1 session
 
 ### v1 — classic UI
 
-1. Download `OpenCodeAndroid-v4.0.4.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.4).
+1. Download `OpenCodeAndroid-v4.0.3.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3).
 2. Install it over an existing 4.0.x install to keep sessions, projects, runtime and root grant. The package id and signing key do not change.
 3. Open **OpenCode Android** and wait for the server.
-
-Optional integrity check:
-
-```sh
-sha256sum -c SHA256SUMS.txt
-```
 
 On Windows PowerShell:
 
 ```powershell
 Get-FileHash .\OpenCodeAndroid-v5.0.3.apk -Algorithm SHA256
-Get-FileHash .\OpenCodeAndroid-v4.0.4.apk -Algorithm SHA256
+Get-FileHash .\OpenCodeAndroid-v4.0.3.apk -Algorithm SHA256
 ```
 
 The v1 package id is `com.opencode.launcher.next`; the `.next` suffix is historical and kept so 4.x updates preserve existing data. The v2 package id is `com.opencode.android`.
@@ -182,6 +178,7 @@ They return JSON, like their Termux:API counterparts. Only safe permissions are 
 
 - **opencode:** each edition checks its own line. v1 **bundles 1.19.4** and updates within 1.x; v2 **bundles 2.2.0** and updates within 2.x. When a newer runtime is available, the app shows a notification; tap it to download the official `opencode-linux-arm64-musl` release, verify its checksum, and install it in place. The server restarts on the new binary; if it does not answer, the app rolls back to the bundled runtime.
 - **The app:** v1 checks 4.x releases and v2 checks 5.x releases. The APK downloads and installs through the system installer. Neither edition offers the other channel.
+- **opencode runtime:** you can pick any version from the bundled one (2.2.0 for v2, 1.19.4 for v1) up to the latest published, from the runtime update menu. The app verifies the checksum and rolls back if the new binary does not start.
 
 ## How it works
 
