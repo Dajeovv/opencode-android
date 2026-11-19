@@ -67,12 +67,31 @@ public class LocalServerService extends Service {
         // foreground, asi que puede esperar en segundo plano.
         new Thread(() -> {
             try {
+                // La caja de herramientas se instala en segundo plano: se
+                // espera a que termine antes de arrancar el runtime, para que
+                // el agente no se use sin herramientas listas.
+                if (!LocalToolbox.complete(getApplicationContext())) {
+                    long deadline = System.currentTimeMillis() + 300000L;
+                    while (!LocalToolbox.complete(getApplicationContext())
+                            && System.currentTimeMillis() < deadline) {
+                        try {
+                            Thread.sleep(2000);
+                        } catch (InterruptedException ignored) {
+                        }
+                    }
+                }
                 // Con root, el home necesita "sdcard" como bind mount antes
                 // de arrancar el servidor: asi el selector muestra rutas
                 // limpias (~/sdcard/...) y no rutas con "..".
                 LocalRuntime.ensureSdcardMount(getApplicationContext());
                 boolean ok = LocalRuntime.start(getApplicationContext(), BuildConfig.SERVER_PORT);
                 if (ok) {
+                    // WARP va atado al servidor: si el usuario lo tiene
+                    // activado, se levanta en cuanto el runtime responde.
+                    WarpClient.init(getApplicationContext());
+                    if (WarpClient.enabled(getApplicationContext())) {
+                        WarpClient.startAsync(getApplicationContext(), null);
+                    }
                     // La UI v2 corta su EventSource al ocultarse: el servicio
                     // mantiene uno propio para avisar en segundo plano.
                     if (BuildConfig.V2) {

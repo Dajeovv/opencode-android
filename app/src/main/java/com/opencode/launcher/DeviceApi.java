@@ -69,6 +69,12 @@ public final class DeviceApi {
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
+    /** Deja en logcat el resultado de las acciones WARP pedidas por el agente. */
+    private static final WarpClient.Callback WARP_LOG = (ok, message, before, after) ->
+            Log.i("OpenCodeWarp", "device: " + message
+                    + (before == null || before.isEmpty() ? "" : " " + before)
+                    + (after == null || after.isEmpty() ? "" : " -> " + after));
+
     /** Ejecuta una accion. Devuelve el JSON de respuesta o null si no existe. */
     public static String run(Context ctx, String action, List<String> args) {
         try {
@@ -109,6 +115,22 @@ public final class DeviceApi {
                     return saveAlias(ctx, args);
                 case "install-mode":
                     return installMode(ctx);
+                case "warp-status":
+                    return WarpClient.status();
+                case "warp-start":
+                    WarpClient.init(ctx);
+                    WarpClient.setEnabled(ctx, true);
+                    WarpClient.startAsync(ctx, WARP_LOG);
+                    return new JSONObject().put("ok", true).toString();
+                case "warp-stop":
+                    WarpClient.setEnabled(ctx, false);
+                    WarpClient.stopAsync(WARP_LOG);
+                    return new JSONObject().put("ok", true).toString();
+                case "warp-rotate":
+                    WarpClient.init(ctx);
+                    WarpClient.setEnabled(ctx, true);
+                    WarpClient.rotateAsync(ctx, WARP_LOG);
+                    return new JSONObject().put("ok", true).toString();
                 default:
                     return null;
             }
@@ -1040,7 +1062,8 @@ public final class DeviceApi {
                 label = ctx.getPackageManager().getApplicationLabel(ai).toString();
             } catch (Exception ignored) {
             }
-            String status = launch(ctx, i, "Abrir " + label, label);
+            String status = launch(ctx, i,
+                    ServerWatch.t(ctx, "Abrir ", "Open ") + label, label);
             o.put("status", status);
             // Que paquete se ha resuelto: asi el agente aprende el nombre
             // real y no vuelve a buscarlo.
@@ -1078,7 +1101,8 @@ public final class DeviceApi {
             Intent i = new Intent(Intent.ACTION_VIEW);
             i.setDataAndType(uri, mime == null ? "*/*" : mime);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            o.put("status", launch(ctx, i, "Abrir " + f.getName(), f.getAbsolutePath()));
+            o.put("status", launch(ctx, i,
+                    ServerWatch.t(ctx, "Abrir ", "Open ") + f.getName(), f.getAbsolutePath()));
             return o.toString();
         } catch (Exception e) {
             return err(String.valueOf(e.getMessage()));
@@ -1157,7 +1181,9 @@ public final class DeviceApi {
         if (nm == null) return;
         NotificationChannel ch = new NotificationChannel(CHANNEL, "OpenCode",
                 NotificationManager.IMPORTANCE_DEFAULT);
-        ch.setDescription("Abrir apps y enlaces desde el agente");
+        ch.setDescription(ServerWatch.t(ctx,
+                "Abrir apps y enlaces desde el agente",
+                "Open apps and links from the agent"));
         nm.createNotificationChannel(ch);
     }
 
@@ -1528,8 +1554,10 @@ public final class DeviceApi {
             NotificationCompat.Builder b =
                     new NotificationCompat.Builder(ctx, CHANNEL)
                             .setSmallIcon(R.drawable.ic_stat_opencode)
-                            .setContentTitle("Instalar aplicacion")
-                            .setContentText("Toca para instalarla")
+                            .setContentTitle(ServerWatch.t(ctx,
+                                    "Instalar aplicacion", "Install app"))
+                            .setContentText(ServerWatch.t(ctx,
+                                    "Toca para instalarla", "Tap to install it"))
                             .setContentIntent(pi)
                             .setAutoCancel(true)
                             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION);

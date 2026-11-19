@@ -41,6 +41,12 @@ public final class LocalNetworkProxy {
     private static int port;
     private static volatile boolean running;
 
+    /**
+     * Proxy HTTP de WARP propio. Cuando esta puesto, el trafico de opencode.ai
+     * sale por el tunel de wireproxy en vez de por la red del telefono.
+     */
+    private static volatile int warpPort;
+
     private LocalNetworkProxy() {
     }
 
@@ -77,6 +83,17 @@ public final class LocalNetworkProxy {
         synchronized (LOCK) {
             return port;
         }
+    }
+
+    /** Encadena opencode.ai al proxy local de WARP propio. */
+    public static void setUpstream(int proxyPort) {
+        warpPort = proxyPort;
+        Log.i(TAG, "proxy WARP encadenado en 127.0.0.1:" + proxyPort);
+    }
+
+    public static void clearUpstream() {
+        if (warpPort != 0) Log.i(TAG, "proxy WARP desencadenado");
+        warpPort = 0;
     }
 
     public static void stop() {
@@ -287,6 +304,10 @@ public final class LocalNetworkProxy {
     }
 
     private static Socket connect(String host, int targetPort) throws IOException {
+        int via = warpPort;
+        if (via > 0 && tunnelWarp(host)) {
+            return connectViaWarp(via, host, targetPort);
+        }
         IOException last = null;
         InetAddress[] addresses = InetAddress.getAllByName(host);
         for (InetAddress address : addresses) {
@@ -300,6 +321,47 @@ public final class LocalNetworkProxy {
             }
         }
         throw last != null ? last : new IOException("sin direccion para " + host);
+    }
+
+    /** Solo el trafico del agente hacia opencode.ai pasa por WARP. */
+    private static boolean tunnelWarp(String host) {
+        String h = host.toLowerCase(Locale.ROOT);
+        return h.equals("opencode.ai") || h.endsWith(".opencode.ai");
+    }
+
+    /** Abre un CONNECT contra el proxy HTTP de wireproxy. */
+    private static Socket connectViaWarp(int proxyPort, String host, int targetPort)
+            throws IOException {
+        Socket s = new Socket();
+        try {
+            s.connect(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), proxyPort),
+                    CONNECT_TIMEOUT_MS);
+            s.setSoTimeout(HEADER_TIMEOUT_MS);
+            s.setTcpNoDelay(true);
+            String authority = host.indexOf(':') >= 0
+                    ? "[" + host + "]:" + targetPort
+                    : host + ":" + targetPort;
+            String req = "CONNECT " + authority + " HTTP/1.1\r\n"
+                    + "Host: " + authority + "\r\n\r\n";
+            OutputStream out = s.getOutputStream();
+            out.write(req.getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            InputStream in = s.getInputStream();
+            String status = readLine(in, 8192);
+            if (status == null || !status.contains(" 200 ")) {
+                throw new IOException("WARP proxy: " + status);
+            }
+            while (true) {
+                String line = readLine(in, 8192);
+                if (line == null || line.isEmpty()) break;
+            }
+            s.setSoTimeout(0);
+            Log.i(TAG, "por WARP: " + authority);
+            return s;
+        } catch (IOException e) {
+            closeQuietly(s);
+            throw e;
+        }
     }
 
     private static void pipe(InputStream in, OutputStream out) {

@@ -154,7 +154,8 @@ public class ServerWatch {
             NotificationManager nm =
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null || !nm.areNotificationsEnabled()) return false;
-            NotificationChannel ch = new NotificationChannel(CH_UPD, "Actualizaciones",
+            NotificationChannel ch = new NotificationChannel(CH_UPD,
+                    t(ctx, "Actualizaciones", "Updates"),
                     NotificationManager.IMPORTANCE_DEFAULT);
             nm.createNotificationChannel(ch);
             NotificationChannel cur = nm.getNotificationChannel(CH_UPD);
@@ -187,7 +188,8 @@ public class ServerWatch {
             NotificationManager nm =
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null || !nm.areNotificationsEnabled()) return false;
-            NotificationChannel ch = new NotificationChannel(CH_UPD, "Actualizaciones",
+            NotificationChannel ch = new NotificationChannel(CH_UPD,
+                    t(ctx, "Actualizaciones", "Updates"),
                     NotificationManager.IMPORTANCE_DEFAULT);
             nm.createNotificationChannel(ch);
             NotificationChannel cur = nm.getNotificationChannel(CH_UPD);
@@ -222,7 +224,8 @@ public class ServerWatch {
                     (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) return;
             if (Build.VERSION.SDK_INT >= 26) {
-                NotificationChannel ch = new NotificationChannel(CH, "Vigia",
+                NotificationChannel ch = new NotificationChannel(CH,
+                        t(ctx, "Vigia", "Watchdog"),
                         NotificationManager.IMPORTANCE_DEFAULT);
                 nm.createNotificationChannel(ch);
             }

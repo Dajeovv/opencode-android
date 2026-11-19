@@ -201,8 +201,59 @@ public class UpdateCheck {
         }
     }
 
+    /** Release de una version concreta (o la ultima si version es null/vacio/"latest"). */
+    static JSONObject runtimeRelease(String version) {
+        if (version == null || version.trim().isEmpty()
+                || version.equalsIgnoreCase("latest")) {
+            return runtimeRelease();
+        }
+        String j = fetchJsonCached("https://api.github.com/repos/" + OPENCODE_REPO
+                + "/releases?per_page=100");
+        if (j == null) return null;
+        try {
+            JSONArray list = new JSONArray(j);
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject o = list.optJSONObject(i);
+                if (o == null || o.optBoolean("draft") || o.optBoolean("prerelease")) continue;
+                String tag = parseVer(o.optString("tag_name", ""));
+                if (tag == null) continue;
+                if (!tag.equals(version)) continue;
+                if (Integer.parseInt(tag.split("\\.")[0]) != runtimeMajor()) continue;
+                return o;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /** Lista de versiones disponibles de la rama actual (mas nueva primero). */
+    public static java.util.List<String> runtimeVersions() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        String j = fetchJsonCached("https://api.github.com/repos/" + OPENCODE_REPO
+                + "/releases?per_page=100");
+        if (j == null) return out;
+        try {
+            JSONArray list = new JSONArray(j);
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject o = list.optJSONObject(i);
+                if (o == null || o.optBoolean("draft") || o.optBoolean("prerelease")) continue;
+                String tag = parseVer(o.optString("tag_name", ""));
+                if (tag == null) continue;
+                if (Integer.parseInt(tag.split("\\.")[0]) != runtimeMajor()) continue;
+                if (out.contains(tag)) continue;
+                out.add(tag);
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
     public static RuntimeAsset opencodeRuntimeAsset() {
-        JSONObject o = runtimeRelease();
+        return opencodeRuntimeAsset(null);
+    }
+
+    public static RuntimeAsset opencodeRuntimeAsset(String version) {
+        JSONObject o = runtimeRelease(version);
         if (o == null) return null;
         try {
             String tag = parseVer(o.optString("tag_name", ""));

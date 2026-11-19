@@ -145,11 +145,16 @@ public class MainActivity extends AppCompatActivity {
     private MaterialButton btnStart;
     private MaterialButton btnOpen;
     private FloatingActionButton fabControls;
+    private boolean fabHiddenByTerm = false;
     private int fabRestoreTries = 0;
     private View splash;
     private android.widget.TextView txtStatusChip;
     private final Handler chipHandler = new Handler(Looper.getMainLooper());
     private TextView splashStatus;
+    private android.widget.FrameLayout splashProgressContainer;
+    private View splashProgressFill;
+    private TextView splashProgressLabel;
+    private TextView splashToolboxHint;
     private MaterialButton splashRetry;
     private Runnable pendingRetry;
     private int retryAttempt = 0;
@@ -308,6 +313,9 @@ public class MainActivity extends AppCompatActivity {
         progress = findViewById(R.id.progress);
         fabControls = findViewById(R.id.fabControls);
         fabControls.setOnClickListener(v -> showControlsMenu(fabControls));
+        // WARP va atado al servidor: arranca cuando el runtime esta sano y
+        // se para al detenerlo. Aqui solo se inicializa el cliente.
+        WarpClient.init(this);
         // Mini-boton arrastrable: un toque abre Controles, arrastrar lo mueve
         // y la posicion se guarda.
         final int slop = android.view.ViewConfiguration.get(this).getScaledTouchSlop();
@@ -362,6 +370,10 @@ public class MainActivity extends AppCompatActivity {
         splash = findViewById(R.id.splash);
         txtStatusChip = findViewById(R.id.txtStatusChip);
         splashStatus = findViewById(R.id.splashStatus);
+        splashProgressContainer = findViewById(R.id.splashProgressContainer);
+        splashProgressFill = findViewById(R.id.splashProgressFill);
+        splashProgressLabel = findViewById(R.id.splashProgressLabel);
+        splashToolboxHint = findViewById(R.id.splashToolboxHint);
         splashRetry = findViewById(R.id.splashRetry);
         splashRetry.setOnClickListener(v -> retryStartupNow());
         splashStart = SystemClock.uptimeMillis();
@@ -426,6 +438,39 @@ public class MainActivity extends AppCompatActivity {
             return false;
         });
 
+        // Callback de progreso del toolbox hacia la UI del splash.
+        LocalToolbox.uiProgress = new LocalToolbox.Progress() {
+            @Override
+            public void onStep(String message) {
+                runOnUiThread(() -> {
+                    if (splashStatus != null) splashStatus.setText(message);
+                });
+            }
+
+            @Override
+            public void onBytes(long done, long total) {
+                runOnUiThread(() -> {
+                    if (splashProgressContainer != null && splashProgressFill != null && total > 0) {
+                        int pct = (int) Math.min(100, done * 100 / total);
+                        if (splashProgressContainer.getWidth() == 0) {
+                            splashProgressContainer.postDelayed(() -> {
+                                if (splashProgressContainer != null && splashProgressFill != null) {
+                                    android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+                                    lp.width = (int) (splashProgressContainer.getWidth() * pct / 100.0);
+                                    splashProgressFill.setLayoutParams(lp);
+                                }
+                            }, 100);
+                        } else {
+                            android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+                            lp.width = (int) (splashProgressContainer.getWidth() * pct / 100.0);
+                            splashProgressFill.setLayoutParams(lp);
+                        }
+                        if (splashProgressLabel != null) splashProgressLabel.setText(pct + "%");
+                    }
+                });
+            }
+        };
+
         // La caja de herramientas viaja dentro del APK: se instala sola, sin
         // que el usuario tenga que hacer nada (no depende de los permisos ni
         // de que arranque el servidor).
@@ -441,6 +486,17 @@ public class MainActivity extends AppCompatActivity {
         }
 
         applyLang();
+        // Mientras el toolbox se instala (primera vez), se muestra el progreso
+        // en el estado del servidor para que no se hable con el agente sin
+        // herramientas listas.
+        watchToolboxStatus();
+        // Instalacion nueva: se marca la version ya, para que las novedades no
+        // salgan al terminar el onboarding. El aviso de WARP si se muestra,
+        // pero cuando OpenCode ya ha cargado (ver hideSplash).
+        if (!isOnboarded()) {
+            getSharedPreferences("app", MODE_PRIVATE).edit()
+                    .putInt("last_version_code", BuildConfig.VERSION_CODE).apply();
+        }
 
         // Si el movil tiene root, se pide su permiso de su al abrir (Magisk/
         // KernelSU muestran su dialogo normal). Denegado no se vuelve a pedir.
@@ -462,6 +518,11 @@ public class MainActivity extends AppCompatActivity {
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            // En debug se permite contenido mixto para probar el terminal embebido
+            // (WebSockets ws:// sobre la pagina http://localhost).
+            s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
         if (BuildConfig.V2) {
             // El servidor sirve los bundles con max-age=31536000,immutable:
             // con la cache activa la UI no los vuelve a bajar por el socket
@@ -482,6 +543,8 @@ public class MainActivity extends AppCompatActivity {
         // WebView no puede guardar eso, asi que el shim lo lee y lo pasa
         // por aqui.
         web.addJavascriptInterface(new DownloadBridge(), "ocDownload");
+        // Terminal movil: ocultar el FAB superpuesto y habilitar scroll tactil.
+        web.addJavascriptInterface(new TermBridge(), "ocTerm");
         // Descargas: la web crea un blob: y pulsa un <a download>. El
         // WebView no puede guardar eso, asi que el shim lo lee y lo pasa
         // por aqui.
@@ -613,6 +676,7 @@ public class MainActivity extends AppCompatActivity {
                         watchUiReady();
                         bridgeNotifications();
                         shimMenuSelect();
+                        shimTerminalMobile();
                     }
                     return;
                 }
@@ -952,7 +1016,7 @@ public class MainActivity extends AppCompatActivity {
         // Next: no existe panel. Se oculta todo lo que no sea el chat; el
         // arranque vive en el splash y los fallos se reintentan ahi.
         if (chatOnly()) applyChatOnlyChrome();
-        // El vig��a sobrevive solo hasta reiniciar: rearmarlo siempre (si esta OFF no hace nada).
+        // El viga sobrevive solo hasta reiniciar: rearmarlo siempre (si esta OFF no hace nada).
         ServerWatch.arm(this);
         // Chequeo diario de updates aunque la app este cerrada (solo avisa).
         if (!BuildConfig.V2_LAB) ServerWatch.armUpdateCheck(this);
@@ -1065,22 +1129,27 @@ public class MainActivity extends AppCompatActivity {
     private String dlReasonText(int reason) {
         switch (reason) {
             case android.app.DownloadManager.ERROR_FILE_ERROR:
-                return "no se pudo guardar el archivo (espacio o permiso)";
+                return T("no se pudo guardar el archivo (espacio o permiso)",
+                        "could not save the file (space or permission)");
             case android.app.DownloadManager.ERROR_INSUFFICIENT_SPACE:
-                return "sin espacio en el movil";
+                return T("sin espacio en el movil", "no space on the phone");
             case android.app.DownloadManager.ERROR_DEVICE_NOT_FOUND:
-                return "almacenamiento no disponible";
+                return T("almacenamiento no disponible", "storage not available");
             case android.app.DownloadManager.ERROR_HTTP_DATA_ERROR:
-                return "corte de red durante la descarga";
+                return T("corte de red durante la descarga",
+                        "network dropped during the download");
             case android.app.DownloadManager.ERROR_UNHANDLED_HTTP_CODE:
-                return "GitHub respondio raro (http)";
+                return T("GitHub respondio raro (http)",
+                        "GitHub returned an unexpected response (http)");
             case android.app.DownloadManager.ERROR_TOO_MANY_REDIRECTS:
-                return "demasiadas redirecciones";
+                return T("demasiadas redirecciones", "too many redirects");
             case android.app.DownloadManager.ERROR_CANNOT_RESUME:
-                return "descarga interrumpida y no reanudable: reintenta";
+                return T("descarga interrumpida y no reanudable: reintenta",
+                        "download interrupted and cannot resume: try again");
             default:
-                if (reason >= 400 && reason < 600) return "HTTP " + reason + " en GitHub";
-                return "motivo " + reason;
+                if (reason >= 400 && reason < 600)
+                    return "HTTP " + reason + T(" en GitHub", " from GitHub");
+                return T("motivo ", "reason ") + reason;
         }
     }
 
@@ -1133,14 +1202,14 @@ public class MainActivity extends AppCompatActivity {
     /** Cambia el interruptor global: guarda, avisa y reinicia si el servidor corre. */
     private void setAutoPerm(boolean now) {
         getSharedPreferences("app", MODE_PRIVATE).edit().putBoolean("auto_perm", now).apply();
-        log(T("Interruptor permisos-auto: ", "Auto-approve switch: ") + (now ? "SÍ" : "NO"));
-        snack(now ? T("Permisos automáticos activados", "Auto-approve enabled")
-                : T("Permisos automáticos desactivados", "Auto-approve disabled"));
+        log(T("Interruptor permisos-auto: ", "Auto-approve switch: ") + (now ? "S" : "NO"));
+        snack(now ? T("Permisos automticos activados", "Auto-approve enabled")
+                : T("Permisos automticos desactivados", "Auto-approve disabled"));
         if (serverOpen) {
             log(T("Reinicio para aplicar el cambio...", "Restarting to apply the change..."));
             restartServer();
         } else {
-            log(T("Se aplicará al arrancar el servidor.", "Will apply on server start."));
+            log(T("Se aplicar al arrancar el servidor.", "Will apply on server start."));
         }
     }
     private String stopRuntime() {
@@ -1185,16 +1254,51 @@ public class MainActivity extends AppCompatActivity {
                 if (!open) {
                     getSharedPreferences("app", MODE_PRIVATE).edit()
                             .putBoolean(ServerWatch.PREF_WD_HOLD, true).apply();
-                    log(T("Vigía en pausa hasta el próximo arranque.",
+                    log(T("Viga en pausa hasta el prximo arranque.",
                             "Watchdog paused until next start."));
                 }
             });
         }).start();
     }
 
-    /** Updater oficial del runtime: descarga, verifica SHA-256, instala y reinicia. */
+    private void revertRuntimeToBundled() {
+        try {
+            android.content.SharedPreferences sp = getSharedPreferences("app", MODE_PRIVATE);
+            String version = sp.getString("opencode_runtime_version", "");
+            String path = sp.getString("opencode_runtime_path", "");
+            if (version != null && !version.isEmpty() && path != null && !path.isEmpty()) {
+                File dir = new File(path).getParentFile();
+                if (dir != null) LocalToolbox.deleteTree(dir);
+            }
+            sp.edit()
+                    .remove("opencode_runtime_version")
+                    .remove("opencode_runtime_path")
+                    .remove("opencode_runtime_digest")
+                    .remove("opencode_runtime_installed_at")
+                    .putString("upd_installed", BuildConfig.OPENCODE_VERSION)
+                    .putString("upd_latest", BuildConfig.OPENCODE_VERSION)
+                    .putString("upd_runtime", "local:" + BuildConfig.OPENCODE_VERSION)
+                    .putInt("upd_v", 5)
+                    .putLong("upd_ts", System.currentTimeMillis())
+                    .putBoolean("upd_pending", false)
+                    .putString("upd_notified", BuildConfig.OPENCODE_VERSION)
+                    .apply();
+            LocalRuntime.stop();
+            LocalServerService.start(this);
+            snack(T("Revertido a " + BuildConfig.OPENCODE_VERSION,
+                    "Reverted to " + BuildConfig.OPENCODE_VERSION));
+            log("Revertido opencode a la version incluida: " + BuildConfig.OPENCODE_VERSION);
+        } catch (Exception e) {
+            log("No se pudo revertir: " + e.getMessage());
+            snack(T("No se pudo revertir", "Could not revert"));
+        }
+    }
+
     private void startRuntimeUpdate() {
-        if (updLatest.isEmpty()) return;
+        startRuntimeUpdate("");
+    }
+
+    private void startRuntimeUpdate(String version) {
         if (!hasAllFilesAccess()) {
             snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
             openAllFilesSettings();
@@ -1203,13 +1307,52 @@ public class MainActivity extends AppCompatActivity {
         try {
             Intent i = new Intent(this, RuntimeUpdateService.class)
                     .setAction(RuntimeUpdateService.ACTION_INSTALL)
-                    .putExtra(RuntimeUpdateService.EXTRA_VERSION, updLatest);
+                    .putExtra(RuntimeUpdateService.EXTRA_VERSION, version == null ? "" : version);
             startForegroundService(i);
-            snack(T("Actualizando opencode…", "Updating opencode…"));
+            snack(T("Actualizando opencode...", "Updating opencode..."));
         } catch (Exception e) {
-            log("No se pudo iniciar la actualización: " + e.getMessage());
-            snack(T("No se pudo iniciar la actualización", "Could not start the update"));
+            log("No se pudo iniciar la actualizacion: " + e.getMessage());
+            snack(T("No se pudo iniciar la actualizacion", "Could not start the update"));
         }
+    }
+
+    /** Selector de version del runtime de opencode. */
+    private void showRuntimeVersionPicker() {
+        if (!hasAllFilesAccess()) {
+            snack(T("Activa 'todos los archivos' y repite", "Enable 'All files' and retry"));
+            openAllFilesSettings();
+            return;
+        }
+        new Thread(() -> {
+            java.util.List<String> versions = UpdateCheck.runtimeVersions();
+            runOnUiThread(() -> {
+                if (versions == null || versions.isEmpty()) {
+                    snack(T("No se pudo consultar las versiones", "Could not fetch versions"));
+                    return;
+                }
+                String active = LocalRuntime.activeVersion(this);
+                java.util.List<String> filtered = new java.util.ArrayList<>();
+                for (String v : versions) {
+                    if (!v.equals(BuildConfig.OPENCODE_VERSION)) filtered.add(v);
+                }
+                String[] items = new String[filtered.size() + 1];
+                items[0] = T("Version incluida (", "Bundled version (")
+                        + BuildConfig.OPENCODE_VERSION + ")";
+                for (int i = 0; i < filtered.size(); i++) {
+                    String v = filtered.get(i);
+                    items[i + 1] = v + (v.equals(active)
+                            ? T(" (activa)", " (active)") : "");
+                }
+                new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                        .setTitle(T("Elegir version de OpenCode", "Choose OpenCode version"))
+                        .setItems(items, (d, which) -> {
+                            String chosen = (which == 0) ? "bundled" : filtered.get(which - 1);
+                            startRuntimeUpdate(chosen);
+                        })
+                        .setNegativeButton(T("Cancelar", "Cancel"), null)
+                        .show();
+            });
+        }, "runtime-versions").start();
     }
 
     /** Descarga e instala la nueva version del launcher. */
@@ -1230,16 +1373,77 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             StringBuilder t = new StringBuilder();
             try {
-                t.append(T("0) runtime local (proot)...\n", "0) local runtime (proot)...\n"));
+                if (!LocalToolbox.complete(this)) {
+                    setSplashStatus(T("Instalando herramientas...", "Installing tools..."));
+                } else {
+                    t.append(T("0) runtime local (proot)...\n", "0) local runtime (proot)...\n"));
+                    runOnUiThread(() -> {
+                        if (splashProgressContainer != null && splashProgressFill != null) {
+                            int w = splashProgressContainer.getWidth();
+                            if (w == 0) {
+                                splashProgressContainer.postDelayed(() -> {
+                                    if (splashProgressContainer != null && splashProgressFill != null) {
+                                        android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+                                        lp.width = (int) (splashProgressContainer.getWidth() * 0.05);
+                                        splashProgressFill.setLayoutParams(lp);
+                                        if (splashProgressLabel != null) splashProgressLabel.setText("5%");
+                                    }
+                                }, 100);
+                            } else {
+                                android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+                                lp.width = (int) (w * 0.05);
+                                splashProgressFill.setLayoutParams(lp);
+                                if (splashProgressLabel != null) splashProgressLabel.setText("5%");
+                            }
+                        }
+                        setSplashStatus(T("Arrancando servidor...", "Starting server..."));
+                    });
+                }
                 LocalServerService.start(this);
+                // Espera a que el toolbox termine antes de contar el timeout
+                // del puerto: si no, el boton de Reintentar aparece a mitad.
+                long tbDeadline = System.currentTimeMillis() + 300000L;
+                while (!LocalToolbox.complete(this)
+                        && System.currentTimeMillis() < tbDeadline) {
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
                 t.append(T("Servicio lanzado; esperando el puerto ", "Service started; waiting for port "))
                         .append(PORT).append("...\n");
-                boolean open = waitForPort(20000);
+                boolean open = waitForPort(120000);
+                if (open) {
+                    runOnUiThread(() -> {
+                        if (splashProgressContainer != null && splashProgressFill != null) {
+                            int w = splashProgressContainer.getWidth();
+                            if (w > 0) {
+                                android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+                                lp.width = (int) (w * 0.6);
+                                splashProgressFill.setLayoutParams(lp);
+                                if (splashProgressLabel != null) splashProgressLabel.setText("60%");
+                            }
+                        }
+                    });
+                }
                 boolean httpOk = false;
                 if (open) {
                     t.append(T("Puerto abierto; esperando el primer HTTP 200...\n",
                             "Port open; waiting for the first HTTP 200...\n"));
                     httpOk = waitForHttp(45000);
+                    if (httpOk) {
+                        runOnUiThread(() -> {
+                            if (splashProgressContainer != null && splashProgressFill != null) {
+                                int w = splashProgressContainer.getWidth();
+                                if (w > 0) {
+                                    android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+                                    lp.width = w;
+                                    splashProgressFill.setLayoutParams(lp);
+                                    if (splashProgressLabel != null) splashProgressLabel.setText("100%");
+                                }
+                            }
+                        });
+                    }
                     if (httpOk && !BuildConfig.V2 && !BuildConfig.V2_LAB) applyAutoPermissions(autoPerm());
                 }
                 final boolean done = open;
@@ -1262,6 +1466,7 @@ public class MainActivity extends AppCompatActivity {
                                 .putBoolean("onboarding_done", true)
                                 .putBoolean("wizard_done", true)
                                 .putBoolean("setup_ok", true).apply();
+                        maybeStartWarp();
                     } else {
                         // Si no arranco, el splash muestra Reintentar y la
                         // app reintenta sola; el panel ya no existe en Next.
@@ -1390,17 +1595,17 @@ public class MainActivity extends AppCompatActivity {
         ((TextView) content.findViewById(R.id.shareTitle))
                 .setText(T("Compartir con opencode", "Share with opencode"));
         ((TextView) content.findViewById(R.id.shareSubtitle))
-                .setText(T("Elige dónde enviarlo", "Choose where to send it"));
+                .setText(T("Elige dnde enviarlo", "Choose where to send it"));
         ((TextView) content.findViewById(R.id.shareSessionLabel))
                 .setText(T("Enviar a", "Send to"));
         ((TextView) content.findViewById(R.id.sharePreview))
                 .setText(sharePreview(share));
         shareSessionNameView = content.findViewById(R.id.shareSessionName);
         shareSessionSubView = content.findViewById(R.id.shareSessionSub);
-        shareSessionNameView.setText(T("Cargando sesiones…", "Loading sessions…"));
+        shareSessionNameView.setText(T("Cargando sesiones", "Loading sessions"));
         shareSessionSubView.setText(T("Comprobando servidor", "Checking server"));
         shareInstructionView = content.findViewById(R.id.shareInstruction);
-        shareInstructionView.setHint(T("Instrucción opcional", "Optional instruction"));
+        shareInstructionView.setHint(T("Instruccin opcional", "Optional instruction"));
         shareSendButton = content.findViewById(R.id.shareSend);
         shareSendButton.setText(T("Enviar", "Send"));
         ((MaterialButton) content.findViewById(R.id.shareCancel))
@@ -1458,24 +1663,24 @@ public class MainActivity extends AppCompatActivity {
         ((TextView) content.findViewById(R.id.sharePickerTitle))
                 .setText(T("Enviar a", "Send to"));
         ((TextView) content.findViewById(R.id.sharePickerSub))
-                .setText(T("Elige una conversación nueva o existente",
+                .setText(T("Elige una conversacin nueva o existente",
                         "Choose a new or existing conversation"));
         LinearLayout list = content.findViewById(R.id.sharePickerList);
         addShareSessionOption(list, null,
-                T("Nueva sesión", "New session"),
-                T("Crear una conversación nueva", "Create a new conversation"));
+                T("Nueva sesin", "New session"),
+                T("Crear una conversacin nueva", "Create a new conversation"));
         if (shareSessionsLoading) {
-            addShareSessionInfo(list, T("Cargando sesiones…", "Loading sessions…"));
+            addShareSessionInfo(list, T("Cargando sesiones", "Loading sessions"));
         } else if (shareSessions.isEmpty()) {
-            addShareSessionInfo(list, T("No hay sesiones todavía", "No sessions yet"));
+            addShareSessionInfo(list, T("No hay sesiones todava", "No sessions yet"));
         } else {
             for (ShareSession session : shareSessions) {
                 String title = session.title == null || session.title.trim().isEmpty()
-                        ? T("Sesión sin título", "Untitled session") : session.title.trim();
+                        ? T("Sesin sin ttulo", "Untitled session") : session.title.trim();
                 addShareSessionOption(list, session.id, title,
-                        T("Sesión existente", "Existing session")
+                        T("Sesin existente", "Existing session")
                                 + (session.updated > 0
-                                ? " · " + shareRelativeTime(session.updated) : ""));
+                                ? "  " + shareRelativeTime(session.updated) : ""));
             }
         }
         MaterialButton cancel = content.findViewById(R.id.sharePickerCancel);
@@ -1581,12 +1786,12 @@ public class MainActivity extends AppCompatActivity {
     private void updateShareSessionRow() {
         if (shareSessionNameView == null || shareSessionSubView == null) return;
         if (shareTargetSessionId == null) {
-            shareSessionNameView.setText(T("Nueva sesión", "New session"));
-            shareSessionSubView.setText(T("Se creará al enviar", "Created when you send"));
+            shareSessionNameView.setText(T("Nueva sesin", "New session"));
+            shareSessionSubView.setText(T("Se crear al enviar", "Created when you send"));
         } else {
             shareSessionNameView.setText(shareTargetSessionTitle == null
-                    ? T("Sesión seleccionada", "Selected session") : shareTargetSessionTitle);
-            shareSessionSubView.setText(T("Sesión existente", "Existing session"));
+                    ? T("Sesin seleccionada", "Selected session") : shareTargetSessionTitle);
+            shareSessionSubView.setText(T("Sesin existente", "Existing session"));
         }
     }
 
@@ -1608,8 +1813,8 @@ public class MainActivity extends AppCompatActivity {
                     if (generation != shareSessionsGeneration) return;
                     shareSessionsLoading = false;
                     if (shareTargetSessionId == null) {
-                        shareSessionNameView.setText(T("Nueva sesión", "New session"));
-                        shareSessionSubView.setText(T("Servidor no disponible: se creará al enviar",
+                        shareSessionNameView.setText(T("Nueva sesin", "New session"));
+                        shareSessionSubView.setText(T("Servidor no disponible: se crear al enviar",
                                 "Server unavailable: will be created on send"));
                     }
                 });
@@ -1636,7 +1841,7 @@ public class MainActivity extends AppCompatActivity {
                     if (generation != shareSessionsGeneration) return;
                     shareSessionsLoading = false;
                     if (shareTargetSessionId == null) {
-                        shareSessionNameView.setText(T("Nueva sesión", "New session"));
+                        shareSessionNameView.setText(T("Nueva sesin", "New session"));
                         shareSessionSubView.setText(T("No se pudieron cargar las sesiones",
                                 "Could not load sessions"));
                     }
@@ -1659,7 +1864,7 @@ public class MainActivity extends AppCompatActivity {
                     shareServerStartFailed = false;
                     runOnUiThread(() -> {
                         if (btnStart != null && btnStart.isEnabled()) {
-                            setShareSessionStatus(T("Arrancando servidor…", "Starting server…"),
+                            setShareSessionStatus(T("Arrancando servidor", "Starting server"),
                                     T("Puede tardar unos segundos", "This may take a few seconds"));
                             startServerSequence();
                         }
@@ -2062,6 +2267,18 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** Puente para el terminal movil: ocultar el FAB superpuesto. */
+    private class TermBridge {
+        @JavascriptInterface
+        public void setFabVisible(boolean visible) {
+            runOnUiThread(() -> {
+                if (fabControls == null) return;
+                fabHiddenByTerm = !visible;
+                fabControls.setVisibility(visible ? android.view.View.VISIBLE : android.view.View.GONE);
+            });
+        }
+    }
+
     /** Puente para el interruptor de permisos de la web. */
     private class ConfigBridge {
         @JavascriptInterface
@@ -2171,9 +2388,12 @@ public class MainActivity extends AppCompatActivity {
         try {
             android.app.NotificationManager nm = (android.app.NotificationManager)
                     getSystemService(Context.NOTIFICATION_SERVICE);
-            nm.createNotificationChannel(new android.app.NotificationChannel(
-                    "oc-agent", "Agente",
-                    android.app.NotificationManager.IMPORTANCE_DEFAULT));
+            android.app.NotificationChannel ch = new android.app.NotificationChannel(
+                    "oc-agent", T("Agente", "Agent"),
+                    android.app.NotificationManager.IMPORTANCE_DEFAULT);
+            ch.setDescription(T("Avisos cuando el agente termina",
+                    "Alerts when the agent finishes"));
+            nm.createNotificationChannel(ch);
         } catch (Exception ignored) {
         }
     }
@@ -2400,7 +2620,7 @@ public class MainActivity extends AppCompatActivity {
     /**
      * Filtra /api/fs/list y /api/fs/find para que el selector de proyectos no
      * muestre carpetas internas del runtime (.cache, .config, bin, lib...).
-     * Tambien añade la carpeta de proyectos compartida, que el servidor no
+     * Tambien aade la carpeta de proyectos compartida, que el servidor no
      * lista porque es un enlace simbolico.
      */
     private WebResourceResponse filterFsResponse(Uri u) {
@@ -2747,12 +2967,14 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         setSplashStatus(message);
-        if (!splashDone && splashRetry != null) {
+        if (!splashDone && splashRetry != null && LocalToolbox.complete(this)) {
             splashRetry.setVisibility(View.VISIBLE);
         } else if (retryAttempt == 0) {
             snack(message);
         }
-        scheduleStartupRetry();
+        if (LocalToolbox.complete(this)) {
+            scheduleStartupRetry();
+        }
     }
 
     private void scheduleStartupRetry() {
@@ -2792,7 +3014,11 @@ public class MainActivity extends AppCompatActivity {
             if (serverOpen || starting) return;
             starting = true;
             new Handler(Looper.getMainLooper()).post(() -> {
-                setSplashStatus(T("Arrancando servidor...", "Starting server..."));
+                if (!LocalToolbox.complete(this)) {
+                    setSplashStatus(T("Instalando herramientas...", "Installing tools..."));
+                } else {
+                    setSplashStatus(T("Arrancando servidor...", "Starting server..."));
+                }
                 startServerSequence();
             });
             return;
@@ -2810,7 +3036,11 @@ public class MainActivity extends AppCompatActivity {
                 });
             } else if (!isPortOpen()) {
                 runOnUiThread(() -> {
-                    setSplashStatus(T("Arrancando servidor...", "Starting server..."));
+                    if (!LocalToolbox.complete(this)) {
+                        setSplashStatus(T("Instalando herramientas...", "Installing tools..."));
+                    } else {
+                        setSplashStatus(T("Arrancando servidor...", "Starting server..."));
+                    }
                     if (btnStart.isEnabled()) btnStart.performClick();
                 });
             } else {
@@ -2834,7 +3064,7 @@ public class MainActivity extends AppCompatActivity {
         android.app.KeyguardManager km = (android.app.KeyguardManager)
                 getSystemService(Context.KEYGUARD_SERVICE);
         if (km == null || !km.isDeviceSecure()) {
-            snack(T("Pon bloqueo al móvil primero (Ajustes > Seguridad)",
+            snack(T("Pon bloqueo al mvil primero (Ajustes > Seguridad)",
                     "Set a screen lock first (Settings > Security)"));
             try {
                 startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS));
@@ -2868,7 +3098,7 @@ public class MainActivity extends AppCompatActivity {
     private void enterChatBlockingCore() {
         final int gen = ++openGen;
         setBusy(true);
-        txtStatus.setText(T("Comprobando servidor…", "Checking server…"));
+        txtStatus.setText(T("Comprobando servidor", "Checking server"));
         new Thread(() -> {
             if (!isPortOpen()) {
                 runOnUiThread(() -> {
@@ -2883,7 +3113,7 @@ public class MainActivity extends AppCompatActivity {
                         setBusy(false);
                         return;
                     }
-                    txtStatus.setText(T("Servidor parado: arrancando…", "Server stopped: starting…"));
+                    txtStatus.setText(T("Servidor parado: arrancando", "Server stopped: starting"));
                     log("Abrir chat con servidor parado: arranco solo.");
                     btnStart.performClick();
                     setBusy(false);
@@ -2896,7 +3126,7 @@ public class MainActivity extends AppCompatActivity {
                 final int s = waited + 5;
                 runOnUiThread(() -> {
                     if (gen == openGen) txtStatus.setText(
-                            T("Esperando respuesta… " + s + "s", "Waiting for answer… " + s + "s"));
+                            T("Esperando respuesta " + s + "s", "Waiting for answer " + s + "s"));
                 });
             }
             if (gen != openGen || isFinishing()) return;
@@ -2913,11 +3143,11 @@ public class MainActivity extends AppCompatActivity {
                 } else if (isPortOpen()) {
                     // Puerto abierto pero sin HTTP en 60s: servidor colgado
                     // (escucha pero no responde). Reinicio solo, sin pedir nada.
-                    txtStatus.setText(T("Servidor colgado: reiniciando solo…",
-                            "Hung server: restarting alone…"));
+                    txtStatus.setText(T("Servidor colgado: reiniciando solo",
+                            "Hung server: restarting alone"));
                     log("Puerto abierto sin HTTP 200 en 60s: servidor colgado,"
                             + " reinicio solo (equivale a Reiniciar).");
-                    snack(T("Servidor colgado, reiniciando…", "Hung server, restarting…"));
+                    snack(T("Servidor colgado, reiniciando", "Hung server, restarting"));
                     restartServer();
                 } else {
                     log("Chat sin HTTP 200 en 60s: no abro (evita blanco)."
@@ -2952,7 +3182,7 @@ public class MainActivity extends AppCompatActivity {
         getSharedPreferences("app", MODE_PRIVATE).edit().putString("lang", nowEn ? "en" : "es").apply();
         android.widget.TextView l = findViewById(R.id.txtLog);
         String ls = (l == null) ? "" : l.getText().toString();
-        snack(nowEn ? "Language: English" : "Idioma: español");
+        snack(nowEn ? "Language: English" : "Idioma: espaol");
         applyLang();
         // No restaurar el texto inicial en el idioma viejo; lo demas se conserva.
         String es0 = "Listo. Pulsa Iniciar y abrir.", en0 = "Ready. Press Start and open.";
@@ -2980,15 +3210,181 @@ public class MainActivity extends AppCompatActivity {
         setLangText(R.id.txtStatus, T("Servidor ?", "Server ?"));
         setLangText(R.id.splashRetry, T("Reintentar", "Retry"));
         refreshUpdateBtn();
+        // Renombra el canal del agente al idioma actual sin esperar a que
+        // llegue un aviso (createNotificationChannel actualiza el existente).
+        ensureAgentChannel();
     }
     private void setLangText(int id, String s) {
         android.widget.TextView v = findViewById(id);
         if (v != null) v.setText(s);
     }
 
+    /** Version visible sin sufijos de build ("5.0.3-debug" -> "5.0.3"). */
+    private String versionLabel() {
+        String v = BuildConfig.VERSION_NAME;
+        int i = v.indexOf('-');
+        return i > 0 ? v.substring(0, i) : v;
+    }
+
+    /**
+     * Muestra las novedades una sola vez, en el primer arranque despues de
+     * actualizar. En una instalacion nueva (sin onboarding) no se muestra.
+     */
+    private void maybeShowChangelog() {
+        if (isFinishing() || isDestroyed()) return;
+        android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
+        int now = BuildConfig.VERSION_CODE;
+        int last = p.getInt("last_version_code", Integer.MIN_VALUE);
+        if (last == now) {
+            maybeAskWarp();
+            return;
+        }
+        if (last > now) {
+            // Downgrade: no hay novedades que contar; solo recordar la version.
+            p.edit().putInt("last_version_code", now).apply();
+            maybeAskWarp();
+            return;
+        }
+        if (!isOnboarded()) {
+            // Primera instalacion: el onboarding ya explica lo basico y el
+            // aviso de WARP se muestra al terminar el primer arranque.
+            p.edit().putInt("last_version_code", now).apply();
+            return;
+        }
+        // Un share abre su propio dialogo: dejar las novedades (y el aviso de
+        // WARP) para el siguiente arranque normal.
+        if (pendingShare != null || shareFlowActive) return;
+
+        String version = versionLabel();
+        String[] lines = Changelog.forVersion(version, useEn());
+        StringBuilder msg = new StringBuilder();
+        for (String line : lines) {
+            if (msg.length() > 0) msg.append('\n').append('\n');
+            msg.append('\u2022').append(' ').append(line);
+        }
+        androidx.appcompat.app.AlertDialog dlg =
+                new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                        .setTitle(T("Novedades de OpenCode ", "What's new in OpenCode ") + version)
+                        .setMessage(msg.toString())
+                        .setPositiveButton(T("Entendido", "Got it"),
+                                (d, w) -> maybeAskWarp())
+                        .show();
+        if (dlg != null) p.edit().putInt("last_version_code", now).apply();
+        else maybeAskWarp();
+    }
+
+    /**
+     * Arranca WARP solo si el servidor esta abierto y el usuario lo activo.
+     * Se llama al arrancar el runtime, al volver a la app y desde el menu.
+     */
+    private void maybeStartWarp() {
+        if (!serverOpen) return;
+        if (!WarpClient.enabled(this)) return;
+        if (WarpClient.running() || WarpClient.busy()) return;
+        WarpClient.startAsync(this, null);
+    }
+
+    /**
+     * Aviso unico de WARP. Llega despues de las novedades (o al terminar el
+     * onboarding en una instalacion nueva) y guarda la respuesta en
+     * "warp_asked" para no volver a preguntar.
+     */
+    private void maybeAskWarp() {
+        if (isFinishing() || isDestroyed()) return;
+        if (!isOnboarded()) return;
+        android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
+        if (p.getBoolean("warp_asked", false)) return;
+        if (WarpClient.enabled(this)) {
+            // Ya venia activado (por ejemplo, tras una actualizacion): no se
+            // pregunta y se deja constancia para no hacerlo mas adelante.
+            p.edit().putBoolean("warp_asked", true).apply();
+            maybeStartWarp();
+            return;
+        }
+        // No tapar el dialogo de compartir ni las novedades.
+        if (pendingShare != null || shareFlowActive) return;
+
+        p.edit().putBoolean("warp_asked", true).apply();
+        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                .setTitle(T("WARP en OpenCode", "WARP in OpenCode"))
+                .setMessage(T(
+                        "El trfico de opencode.ai puede salir por WARP (Cloudflare), "
+                                + "lo que cambia la IP de salida del agente. Solo se "
+                                + "activa mientras el servidor est encendido.\n\n"
+                                + "Quieres activarlo?",
+                        "opencode.ai traffic can go out through WARP (Cloudflare), which "
+                                + "changes the agent's exit IP. It only runs while the "
+                                + "server is on.\n\n"
+                                + "Enable it?"))
+                .setCancelable(false)
+                .setPositiveButton(T("Activar", "Enable"), (d, w) -> {
+                    WarpClient.setEnabled(this, true);
+                    // El servidor puede seguir arrancando: si aun no esta
+                    // abierto, el servicio levantara WARP al terminar.
+                    new Thread(() -> {
+                        boolean open = isPortOpen();
+                        runOnUiThread(() -> {
+                            serverOpen = open;
+                            if (open) {
+                                toastWarp(T("Activando WARP propio",
+                                        "Enabling built-in WARP"));
+                                maybeStartWarp();
+                            } else {
+                                toastWarp(T("WARP se activar al arrancar el servidor.",
+                                        "WARP will start with the server."));
+                            }
+                        });
+                    }, "warp-ask-check").start();
+                })
+                .setNegativeButton(T("Ahora no", "Not now"), null)
+                .show();
+    }
+
     /** Root efectivo del movil. */
     /** Sin root: oculta Estabilizar. El boton de descarga lo maneja la guia. */
+    /** Muestra en el estado del servidor el progreso de la instalacion del
+     *  toolbox mientras no esta completo, para que no se use el agente sin
+     *  herramientas listas. */
+    private void watchToolboxStatus() {
+        final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        Runnable r = new Runnable() {
+            @Override
+            public void run() {
+                if (isFinishing() || isDestroyed()) return;
+                boolean complete = LocalToolbox.complete(MainActivity.this);
+                if (!complete) {
+                    if (splashToolboxHint != null) {
+                        splashToolboxHint.setVisibility(View.VISIBLE);
+                        splashToolboxHint.setText(T(
+                                "Este proceso solo ocurre la primera vez.\n"
+                                        + "Las siguientes aperturas sern instantneas.\n"
+                                        + "Puedes usar el telfono mientras tanto; no cierres la app.",
+                                "This process only happens the first time.\n"
+                                        + "Subsequent opens will be instant.\n"
+                                        + "You can use the phone in the meantime; don't close the app."));
+                    }
+                    h.postDelayed(this, 3000);
+                } else {
+                    if (splashToolboxHint != null) splashToolboxHint.setVisibility(View.GONE);
+                    checkStatus(false);
+                    checkForUpdate(false);
+                    checkLauncherUpdate(false);
+                }
+            }
+        };
+        h.post(r);
+    }
+
     private void checkStatus(boolean verbose) {
+        if (!LocalToolbox.complete(this)) {
+            runOnUiThread(() -> {
+                setBusy(false);
+                if (txtStatus != null)
+                    txtStatus.setText(T("Instalando herramientas...", "Installing tools..."));
+                setSplashStatus(T("Instalando herramientas...", "Installing tools..."));
+            });
+            return;
+        }
         setBusy(true);
         new Thread(() -> {
             boolean open = isPortOpen();
@@ -2998,6 +3394,7 @@ public class MainActivity extends AppCompatActivity {
                 txtStatus.setText(open ? T("Servidor abierto", "Server open") : T("Servidor cerrado", "Server closed"));
                 serverOpen = open;
                 refreshActionButtons();
+                if (open) maybeStartWarp();
                 if (verbose) {
                     log(open ? "OK: puerto " + PORT + " abierto"
                             : "Puerto " + PORT + " cerrado. Pulsa Iniciar o usa el boton Termux.");
@@ -3017,6 +3414,7 @@ public class MainActivity extends AppCompatActivity {
     /** Aviso de update: compara instalada vs ultima de GitHub (cache 24h).
      *  Con runtime empaquetado el binario externo se instala en files/runtime. */
     private void checkForUpdate(boolean verbose) {
+        if (!LocalToolbox.complete(this)) return; // no notificar hasta que las herramientas esten listas
         final boolean local = LocalRuntime.available(this);
         final String activeVer = LocalRuntime.activeVersion(this);
         final String runtimeKey = local ? "local:" + activeVer : "termux";
@@ -3035,8 +3433,8 @@ public class MainActivity extends AppCompatActivity {
             refreshUpdateBtn();
             if (updatePending) snack(local
                     ? bundledUpdateText(updInstalled, updLatest)
-                    : T("Actualización disponible: ", "Update available: ")
-                            + updInstalled + " → " + updLatest);
+                    : T("Actualizacion disponible: ", "Update available: ")
+                            + updInstalled + " -> " + updLatest);
             maybeNotifyOpencode(updatePending, updInstalled, updLatest);
             return;
         }
@@ -3111,15 +3509,15 @@ public class MainActivity extends AppCompatActivity {
                     else if (pending)
                         snack(local
                                 ? bundledUpdateText(installed, latest)
-                                : T("Actualización disponible: ", "Update available: ")
-                                        + installed + " → " + latest);
+                                : T("Actualizacion disponible: ", "Update available: ")
+                                        + installed + "  " + latest);
                     else
-                        snack(T("Estás al día (", "Up to date (") + installed + ")");
+                        snack(T("Ests al da (", "Up to date (") + installed + ")");
                 } else if (pending) {
                     snack(local
                             ? bundledUpdateText(installed, latest)
-                            : T("Actualización disponible: ", "Update available: ")
-                                    + installed + " → " + latest);
+                            : T("Actualizacion disponible: ", "Update available: ")
+                                    + installed + "  " + latest);
                 }
             });
         }).start();
@@ -3129,11 +3527,11 @@ public class MainActivity extends AppCompatActivity {
         // Si el aviso no esta en la bandeja no se puede decir "toca la
         // notificacion": se indica como instalarlo de verdad.
         String como = isNotificationActive(ServerWatch.NID_OC)
-                ? T(" disponible; toca la notificación para instalarla",
+                ? T(" disponible; toca la notificacion para instalarla",
                         " available; tap the notification to install it")
-                : T(" disponible; instálalo desde el menú de la app",
+                : T(" disponible; instalalo desde el men de la app",
                         " available; install it from the app menu");
-        return T("OpenCode ", "OpenCode ") + installed + " → " + latest + como;
+        return T("OpenCode ", "OpenCode ") + installed + " -> " + latest + como;
     }
 
     /** Version instalada: 1) el propio servidor la dice en /global/health
@@ -3287,14 +3685,14 @@ public class MainActivity extends AppCompatActivity {
                 .putFloat("fab_y", fabControls.getY()).apply();
     }
 
-    /** La pausa manual del vigía se levanta al arrancar (si falla el arranque,
-     *  el vigía en modo rearrancar puede intentarlo luego). */
+    /** La pausa manual del viga se levanta al arrancar (si falla el arranque,
+     *  el viga en modo rearrancar puede intentarlo luego). */
     private void clearWatchHold() {
         getSharedPreferences("app", MODE_PRIVATE).edit()
                 .putBoolean(ServerWatch.PREF_WD_HOLD, false).apply();
     }
 
-    /** Vigía: permiso de avisos (Android 13+) antes de activarlo. */
+    /** Viga: permiso de avisos (Android 13+) antes de activarlo. */
     private void ensureNotifPerm() {
         if (Build.VERSION.SDK_INT >= 33
                 && androidx.core.content.ContextCompat.checkSelfPermission(this,
@@ -3303,9 +3701,28 @@ public class MainActivity extends AppCompatActivity {
             try {
                 notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS);
             } catch (Exception e) {
-                log("Avisos: concede notificaciones a mano o el vigía no podrá avisar.");
+                log("Avisos: concede notificaciones a mano o el viga no podr avisar.");
             }
         }
+    }
+
+    private void warpDone(boolean ok, String message, String before, String after) {
+        runOnUiThread(() -> {
+            String line = "WARP: " + message
+                    + (before == null || before.isEmpty() ? "" : " " + before)
+                    + (after == null || after.isEmpty() ? "" : " -> " + after);
+            log(line);
+            toastWarp(line);
+            if (ok && after != null && !after.isEmpty()) {
+                // El runtime mantiene conexiones vivas; se reinicia para que
+                // la siguiente peticion salga ya por la IP nueva.
+                Log.i("OpenCodeWarp", "IP de salida: " + after);
+            }
+        });
+    }
+
+    private void toastWarp(String text) {
+        android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show();
     }
 
     /**
@@ -3328,15 +3745,24 @@ public class MainActivity extends AppCompatActivity {
         if (!BuildConfig.V2_LAB) {
             if (updatePending && updateInstallable)
                 menu.getMenu().add(0, 5, 5, T("Actualizar opencode ", "Update opencode ")
-                        + updInstalled + " → " + updLatest).setIcon(android.R.drawable.ic_menu_upload);
+                        + updInstalled + " -> " + updLatest).setIcon(android.R.drawable.ic_menu_upload);
             if (appUpdatePending)
-                menu.getMenu().add(0, 10, 5, T("Nueva versión de la app ", "New app version ")
-                        + appUpdTag + T(" — Descargar", " — Download"))
+                menu.getMenu().add(0, 10, 5, T("Nueva versin de la app ", "New app version ")
+                        + appUpdTag + T("  Descargar", "  Download"))
                         .setIcon(android.R.drawable.stat_sys_download);
             else
-                menu.getMenu().add(0, 11, 5, T("Buscar actualización de la app", "Check app update"))
+                menu.getMenu().add(0, 11, 5, T("Buscar actualizacion de la app", "Check app update"))
                         .setIcon(android.R.drawable.ic_popup_sync);
         }
+        menu.getMenu().add(0, 14, 6, T("Usar WARP propio", "Use built-in WARP"))
+                .setCheckable(true)
+                .setChecked(WarpClient.enabled(this))
+                .setIcon(android.R.drawable.ic_menu_compass);
+        menu.getMenu().add(0, 15, 6, T("Cambiar IP de WARP", "Change WARP IP"))
+                .setIcon(android.R.drawable.ic_menu_mylocation);
+        menu.getMenu().add(0, 17, 6, T("Elegir versin de OpenCode",
+                "Choose OpenCode version"))
+                .setIcon(android.R.drawable.ic_menu_sort_by_size);
         menu.getMenu().add(0, 7, 7, T("Opciones", "Options")).setIcon(android.R.drawable.ic_menu_preferences);
         menu.getMenu().add(0, 9, 9, T("Reportar problema", "Report problem")).setIcon(android.R.drawable.ic_menu_send);
         menu.setOnMenuItemClickListener(item -> {
@@ -3369,6 +3795,49 @@ public class MainActivity extends AppCompatActivity {
                 checkLauncherUpdate(true);
                 return true;
             }
+            if (id == 14) {
+                boolean on = !WarpClient.enabled(this);
+                WarpClient.setEnabled(this, on);
+                if (!on) {
+                    WarpClient.stopAsync(this::warpDone);
+                    return true;
+                }
+                // WARP solo vive con el servidor: si esta parado, la
+                // preferencia queda guardada para el proximo arranque.
+                if (serverOpen) {
+                    toastWarp(T("Activando WARP propio", "Enabling built-in WARP"));
+                    WarpClient.startAsync(this, this::warpDone);
+                } else {
+                    toastWarp(T("WARP se activar al arrancar el servidor.",
+                            "WARP will start with the server."));
+                }
+                return true;
+            }
+            if (id == 15) {
+                if (!serverOpen || !WarpClient.enabled(this)) {
+                    toastWarp(T("Arranca el servidor y activa WARP para cambiar la IP.",
+                            "Start the server and enable WARP before changing the IP."));
+                    return true;
+                }
+                if (WarpClient.busy()) {
+                    toastWarp(T("WARP est ocupado; espera un momento.",
+                            "WARP is busy; wait a moment."));
+                    return true;
+                }
+                if (!WarpClient.running()) {
+                    toastWarp(T("WARP todava no est activo.",
+                            "WARP is not active yet."));
+                    return true;
+                }
+                WarpClient.setEnabled(this, true);
+                toastWarp(T("Cambiando la IP de WARP", "Changing WARP IP"));
+                WarpClient.rotateAsync(this, this::warpDone);
+                return true;
+            }
+            if (id == 17) {
+                showRuntimeVersionPicker();
+                return true;
+            }
             if (id == 7) {
                 showOptionsDialog();
                 return true;
@@ -3391,7 +3860,7 @@ public class MainActivity extends AppCompatActivity {
         menu.show();
     }
 
-    /** Opciones de arranque y vigía. Cada una trae su definición (ES/EN);
+    /** Opciones de arranque y viga. Cada una trae su definicin (ES/EN);
      *  tocar el valor la cambia. Todo apagado por defecto: no gasta nada. */
     private void showOptionsDialog() {
         android.content.SharedPreferences up = getSharedPreferences("app", MODE_PRIVATE);
@@ -3413,11 +3882,11 @@ public class MainActivity extends AppCompatActivity {
         };
         addOptionRow(root,
                 T("Arrancar al encender", "Start on boot"),
-                T("Al encender el móvil arranca el servidor solo, sin abrir la app."
+                T("Al encender el mvil arranca el servidor solo, sin abrir la app."
                         + " Apagado no gasta nada; encendido gasta lo mismo que tener el chat abierto.",
                         "On phone boot, starts the server alone without opening the app."
                         + " Off costs nothing; on costs the same as having the chat open."),
-                ServerWatch.bootOn(this) ? T("SÍ", "ON") : T("NO", "OFF"),
+                ServerWatch.bootOn(this) ? T("S", "ON") : T("NO", "OFF"),
                 () -> {
                     boolean now = !ServerWatch.bootOn(this);
                     getSharedPreferences("app", MODE_PRIVATE).edit()
@@ -3428,8 +3897,8 @@ public class MainActivity extends AppCompatActivity {
                 });
         String wm = ServerWatch.wdMode(this);
         addOptionRow(root,
-                T("Vigía del servidor", "Server watchdog"),
-                T("Mira cada X minutos si el servidor responde. Avisar: te notifica si cayó."
+                T("Viga del servidor", "Server watchdog"),
+                T("Mira cada X minutos si el servidor responde. Avisar: te notifica si cay."
                         + " Rearrancar: lo levanta solo. Apagado no hace nada.",
                         "Checks every X minutes whether the server answers. Notify: tells you if it died."
                         + " Restart: brings it back up alone. Off does nothing."),
@@ -3443,14 +3912,14 @@ public class MainActivity extends AppCompatActivity {
                             .putString(ServerWatch.PREF_WD_MODE, next).apply();
                     ServerWatch.arm(this);
                     if (!"off".equals(next)) ensureNotifPerm();
-                    snack(T("Vigía: ", "Watchdog: ") + next);
+                    snack(T("Viga: ", "Watchdog: ") + next);
                     refresh.run();
                 });
         addOptionRow(root,
-                T("Intervalo del vigía", "Watchdog interval"),
-                T("Cada cuánto mira el vigía. Usa la alarma inexacta del sistema (barata);"
-                        + " en sueño profundo puede tardar más. Parar el servidor a mano lo pausa"
-                        + " hasta el próximo arranque.",
+                T("Intervalo del viga", "Watchdog interval"),
+                T("Cada cunto mira el viga. Usa la alarma inexacta del sistema (barata);"
+                        + " en sueo profundo puede tardar ms. Parar el servidor a mano lo pausa"
+                        + " hasta el prximo arranque.",
                         "How often the watchdog checks. Uses the system's inexact alarm (cheap);"
                         + " in deep sleep it may lag. Stopping the server by hand pauses it"
                         + " until the next start."),
@@ -3539,17 +4008,17 @@ public class MainActivity extends AppCompatActivity {
                 });
         addOptionRow(root,
                 T("Bloqueo de app", "App lock"),
-                T("Pide el desbloqueo del móvil (PIN, patrón, huella) una vez al entrar al chat."
-                        + " Apagado por defecto; si tu móvil no tiene bloqueo, te manda a crearlo.",
+                T("Pide el desbloqueo del mvil (PIN, patrn, huella) una vez al entrar al chat."
+                        + " Apagado por defecto; si tu mvil no tiene bloqueo, te manda a crearlo.",
                         "Asks for the phone unlock (PIN, pattern, fingerprint) once when opening the chat."
                         + " Off by default; if your phone has no lock, it sends you to create one."),
-                lockOn() ? T("SÍ", "ON") : T("NO", "OFF"),
+                lockOn() ? T("S", "ON") : T("NO", "OFF"),
                 () -> {
                     if (!lockOn()) {
                         android.app.KeyguardManager km = (android.app.KeyguardManager)
                                 getSystemService(Context.KEYGUARD_SERVICE);
                         if (km == null || !km.isDeviceSecure()) {
-                            snack(T("Tu móvil no tiene bloqueo: créalo primero",
+                            snack(T("Tu mvil no tiene bloqueo: cralo primero",
                                     "Your phone has no lock: create one first"));
                             try {
                                 startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS));
@@ -3669,7 +4138,7 @@ public class MainActivity extends AppCompatActivity {
      *  navegador o sin red, lo deja en el portapapeles. Vale para cualquiera:
      *  no pide nada tecnico, y nunca manda claves (se tapan antes de salir). */
     private void reportProblem() {
-        snack(T("Armando reporte…", "Building report…"));
+        snack(T("Armando reporte", "Building report"));
         new Thread(() -> {
             String installed = queryHealthVersion();
             android.content.SharedPreferences p =
@@ -3712,7 +4181,7 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {
             }
             String log = redactSecrets(rawLog);
-            if (log.length() > 3000) log = "…(trimmed)…\n" + log.substring(log.length() - 3000);
+            if (log.length() > 3000) log = "(trimmed)\n" + log.substring(log.length() - 3000);
             b.append("### Log (secrets redacted)\n```\n").append(log).append("\n```\n");
             final String title = "App report v" + appVer;
             final String body = b.toString();
@@ -3728,7 +4197,7 @@ public class MainActivity extends AppCompatActivity {
                                 getSystemService(Context.CLIPBOARD_SERVICE);
                         cm.setPrimaryClip(ClipData.newPlainText("opencode-report",
                                 title + "\n\n" + body));
-                        snack(T("Sin navegador: reporte copiado, pégalo donde quieras",
+                        snack(T("Sin navegador: reporte copiado, pgalo donde quieras",
                                 "No browser: report copied, paste it anywhere"));
                     } catch (Exception e2) {
                         snack(T("No se pudo abrir ni copiar", "Could not open nor copy"));
@@ -3831,6 +4300,10 @@ public class MainActivity extends AppCompatActivity {
                                 fabControls.animate().scaleX(1f).scaleY(1f)
                                         .setStartDelay(100).setDuration(300).start();
                             }
+                            // Novedades y aviso de WARP: solo cuando OpenCode ya
+                            // esta visible, nunca encima del splash.
+                            new Handler(Looper.getMainLooper())
+                                    .postDelayed(MainActivity.this::maybeShowChangelog, 350);
                             if (pendingSplashSnack != null) {
                                 String message = pendingSplashSnack;
                                 pendingSplashSnack = null;
@@ -3867,7 +4340,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /** El boton Actualizar solo existe si hay update: si no, desaparece.
-     *  Con update muestra las versiones (instalada → ultima). */
+     *  Con update muestra las versiones (instalada  ultima). */
 private void refreshUpdateBtn() {
         // Panel sin botones: el estado del update vive en el menu del FAB.
         refreshAppUpdateBtn();
@@ -3927,12 +4400,12 @@ private void refreshUpdateBtn() {
                 p.edit().remove("upd_notified").apply();
             }
             if (latest.equals(p.getString("upd_notified", ""))) return;
-            String text = installed + " → " + latest + (LocalRuntime.available(this)
+            String text = installed + " -> " + latest + (LocalRuntime.available(this)
                     ? T(": toca para descargar e instalar",
                             ": tap to download and install")
                     : T(": abre la app para instalarla", ": open the app to install it"));
             if (ServerWatch.notifyOpenCodeUpdate(this,
-                    T("Actualización de opencode", "opencode update"), text, latest)) {
+                    T("Actualizacion de opencode", "opencode update"), text, latest)) {
                 p.edit().putString("upd_notified", latest).apply();
             } else {
                 askNotifPermission();
@@ -3948,7 +4421,7 @@ private void refreshUpdateBtn() {
             android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
             if (tag.equals(p.getString("appupd_notified", ""))) return;
             if (ServerWatch.notifyId(this, ServerWatch.NID_APP,
-                    T("Nueva versión de la app", "New app version"),
+                    T("Nueva versin de la app", "New app version"),
                     T("Disponible ", "Available ") + tag + T(": abre la app para descargarla",
                             ": open the app to download it"))) {
                 p.edit().putString("appupd_notified", tag).apply();
@@ -4013,6 +4486,7 @@ private void refreshUpdateBtn() {
      *  GitHub en cada entrada (minimo 60 s entre intentos por la API). */
     private void checkLauncherUpdate(boolean verbose) {
         if (BuildConfig.V2_LAB) return;
+        if (!LocalToolbox.complete(this)) return; // no notificar hasta que las herramientas esten listas
         android.content.SharedPreferences p = getSharedPreferences("app", MODE_PRIVATE);
         String cTag = p.getString("appupd_tag", "");
         String cUrl = p.getString("appupd_url", "");
@@ -4024,7 +4498,7 @@ private void refreshUpdateBtn() {
             String[] rel = UpdateCheck.launcherRelease();
             if (rel == null) {
                 runOnUiThread(() -> {
-                    if (verbose) snack(T("No se pudo comprobar la actualización",
+                    if (verbose) snack(T("No se pudo comprobar la actualizacion",
                             "Could not check for updates"));
                 });
                 return;
@@ -4039,13 +4513,13 @@ private void refreshUpdateBtn() {
             runOnUiThread(() -> {
                 applyLauncherCache(tag, url);
                 if (verbose) {
-                    // Al pulsar "Buscar actualización" se mira lo que hay
+                    // Al pulsar "Buscar actualizacion" se mira lo que hay
                     // pendiente de instalar, no solo el APK del launcher:
                     // el runtime de opencode tambien se actualiza por su
                     // cuenta y es lo que suele estar pendiente.
                     if (appUpdatePending) {
                         snack(T("App ", "App ") + appUpdTag
-                                + T(" disponible; toca la notificación para instalarla",
+                                + T(" disponible; toca la notificacion para instalarla",
                                         " available; tap the notification to install it"));
                     } else if (updatePending) {
                         snack(bundledUpdateText(updInstalled, updLatest));
@@ -4131,12 +4605,12 @@ private void refreshAppUpdateBtn() {
                             ContextCompat.RECEIVER_NOT_EXPORTED);
                 }
                 runOnUiThread(() -> {
-                    log("Descargando nueva versión " + tag + " ...");
-                    snack(T("Descargando nueva versión...", "Downloading new version..."));
+                    log("Descargando nueva versin " + tag + " ...");
+                    snack(T("Descargando nueva versin...", "Downloading new version..."));
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    log("Descarga de la app falló: " + e.getMessage());
+                    log("Descarga de la app fall: " + e.getMessage());
                     snack(T("Fallo la descarga, mira el registro",
                             "Download failed, check the log"));
                 });
@@ -4222,7 +4696,7 @@ private void refreshAppUpdateBtn() {
             in.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(in);
             log("Instalador abierto: confirma Instalar.");
-            snack(T("Confirma la instalación", "Confirm the install"));
+            snack(T("Confirma la instalacin", "Confirm the install"));
         } catch (Exception e) {
             log("No se pudo abrir el instalador: " + e.getMessage());
             snack(T("Fallo el instalador, mira el registro", "Installer failed, check the log"));
@@ -4461,8 +4935,8 @@ private void refreshAppUpdateBtn() {
         }
     }
 
-    /** La UI web dice "Desktop" (sección y pie "OpenCode Desktop"): en el
-     *  móvil debe decir "Mobile". Solo texto exacto o el nombre compuesto. */
+    /** La UI web dice "Desktop" (seccin y pie "OpenCode Desktop"): en el
+     *  mvil debe decir "Mobile". Solo texto exacto o el nombre compuesto. */
     private void rebrandDesktopToMobile() {
         try {
             web.evaluateJavascript(
@@ -4814,7 +5288,7 @@ private void refreshAppUpdateBtn() {
                                 progress.setVisibility(View.VISIBLE);
                                 progress.setProgressCompat(pct, true);
                                 long s2 = elapsed / 1000;
-                                txtStatus.setText(T("Descargando: ", "Downloading: ") + down + "/" + tot + " MB (" + pct + "%) · "
+                                txtStatus.setText(T("Descargando: ", "Downloading: ") + down + "/" + tot + " MB (" + pct + "%)  "
                                         + String.format("%02d:%02d", s2 / 60, s2 % 60));
                                 progressHandler.postDelayed(this, 3000);
                                 return;
@@ -4843,14 +5317,14 @@ private void refreshAppUpdateBtn() {
                                         .putBoolean("upd_pending", false).apply();
                                 refreshUpdateBtn();
                                 log("Actualizacion instalada: reinicio el servidor para aplicarla.");
-                                snack(T("Actualización terminada, reiniciando…",
-                                        "Update finished, restarting…"));
+                                snack(T("Actualizacion terminada, reiniciando",
+                                        "Update finished, restarting"));
                                 finishUpdateFlow();
                             } else {
                                 // Fallo (o sin codigo): no reiniciar a ciegas con un
                                 // binario a medias; el boton sigue y se puede reintentar.
                                 log("Update termino con EXIT:" + ec + ": no reinicio, revisa Termux y vuelve a pulsar Actualizar.");
-                                snack(T("Terminó con errores (EXIT:" + ec + "), no se reinicia: reintenta",
+                                snack(T("Termin con errores (EXIT:" + ec + "), no se reinicia: reintenta",
                                         "Finished with errors (EXIT:" + ec + "), not restarting: retry"));
                                 updating = false;
                                 progress.setIndeterminate(true);
@@ -4871,14 +5345,14 @@ private void refreshAppUpdateBtn() {
                         progress.setProgressCompat(Math.min(100, Math.max(0, stage)), true);
                         long s = elapsed / 1000;
                         txtStatus.setText(T("Actualizando: ", "Updating: ") + stage + "% " + text
-                                + " · " + String.format("%02d:%02d", s / 60, s % 60));
+                                + "  " + String.format("%02d:%02d", s / 60, s % 60));
                     } else {
                         // 100 anterior al toque: tratar como espera (el run
                         // nuevo aun no escribe su fin).
                         progress.setIndeterminate(true);
                         progress.setVisibility(View.VISIBLE);
                         long s = elapsed / 1000;
-                        txtStatus.setText(T("Actualizando opencode… ", "Updating opencode… ")
+                        txtStatus.setText(T("Actualizando opencode ", "Updating opencode ")
                                 + String.format("%02d:%02d", s / 60, s % 60));
                     }
                 } else {
@@ -4887,13 +5361,13 @@ private void refreshAppUpdateBtn() {
                     // spinner + tiempo siempre visibles; % cuando haya lectura.
                     progress.setIndeterminate(true);
                     progress.setVisibility(View.VISIBLE);
-                    txtStatus.setText(T("Actualizando opencode… ", "Updating opencode… ")
+                    txtStatus.setText(T("Actualizando opencode ", "Updating opencode ")
                             + String.format("%02d:%02d", s / 60, s % 60));
-                    // Sin marcador 16 min ≈ instalador agotado (timeout 900):
+                    // Sin marcador 16 min  instalador agotado (timeout 900):
                     // cerrar por verdad de version (reinicia y reevalua).
                     if (elapsed > 16 * 60 * 1000) {
                         log("Actualizacion sin marcador 16min: reinicio y reevaluo por version.");
-                        snack(T("Revisando version instalada…", "Checking installed version…"));
+                        snack(T("Revisando version instalada", "Checking installed version"));
                         finishUpdateFlow();
                         return;
                     }
@@ -4943,7 +5417,10 @@ private void refreshAppUpdateBtn() {
      *  fondo": el dialogo de confirmacion se cierra al instante y la accion
      *  (borrar sesion, renombrar, exportar) nunca llega al servidor.
      *  Anulando el click sintetico (preventDefault en touchend) el item
-     *  conserva su seleccion y el dialogo se queda abierto. */
+     *  conserva su seleccion y el dialogo se queda abierto.
+     *  Los items de un Select SI necesitan ese click (Kobalte los selecciona
+     *  en el click), asi que se excluyen: si no, los desplegables de ajustes
+     *  no responden al dedo (issue #18). */
     private void shimMenuSelect() {
         try {
             web.evaluateJavascript(
@@ -4951,10 +5428,11 @@ private void refreshAppUpdateBtn() {
                     + "if(window.__ocMenuSelect)return 'ya';"
                     + "window.__ocMenuSelect=true;"
                     + "var ITEM='[data-component=\"menu-v2-item\"]';"
+                    + "var SEL='[data-slot=\"select-v2-listbox\"]';"
                     + "var grabbed=null;"
                     + "document.addEventListener('pointerdown',function(ev){"
                     + "var it=ev.target&&ev.target.closest?ev.target.closest(ITEM):null;"
-                    + "if(it)grabbed=it;"
+                    + "if(it&&!it.closest(SEL))grabbed=it;else grabbed=null;"
                     + "},true);"
                     + "document.addEventListener('touchend',function(ev){"
                     + "if(!grabbed)return;"
@@ -4965,6 +5443,52 @@ private void refreshAppUpdateBtn() {
                     v -> Log.d("OpenCode", "menu-select: " + v));
         } catch (Exception e) {
             Log.d("OpenCode", "menu-select fallo: " + e.getMessage());
+        }
+    }
+
+    /** Shim movil para el terminal integrado: scroll tactil y FAB oculto. */
+    private void shimTerminalMobile() {
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{"
+                    + "if(window.__ocTermShim)return 'ya';"
+                    + "window.__ocTermShim=true;"
+                    + "function hasTerm(){var t=document.querySelector('[data-component=\"terminal\"]');if(!t)return false;var r=t.getBoundingClientRect();return r.width>0 && r.height>0 && t.offsetParent!==null;}"
+                    + "function fixTerm(){var _tries=0;function _fix(){var t=document.querySelector('[data-component=\"terminal\"]');if(!t){if(_tries++<50)setTimeout(_fix,50);return;}if(t.__ocFixed)return;var c=t.querySelector('canvas');if(!c){if(_tries++<50)setTimeout(_fix,50);return;}t.__ocFixed=true;t.style.setProperty('padding-left','0px','important');t.style.setProperty('padding-right','0px','important');Object.defineProperty(t,'clientWidth',{get:function(){return t.offsetWidth+17;},configurable:true});var origFill=CanvasRenderingContext2D.prototype.fillRect;CanvasRenderingContext2D.prototype.fillRect=function(x,y,w,h){var fs=this.fillStyle;if(typeof fs==='string'&&fs.indexOf('128, 128, 128')!==-1)return;return origFill.call(this,x,y,w,h);};var st=document.createElement('style');st.textContent='canvas{width:100% !important;}';document.head.appendChild(st);window.dispatchEvent(new Event('resize'));}setTimeout(_fix,100);}"
+                    + "function syncFab(){try{if(window.ocTerm)window.ocTerm.setFabVisible(!hasTerm());}catch(e){}fixTerm();}"
+                    + "var obs=new MutationObserver(syncFab);"
+                    + "obs.observe(document.documentElement,{childList:true,subtree:true});"
+                    + "syncFab();"
+                    + "setInterval(syncFab,500);"
+                    + "document.addEventListener('touchstart',syncFab,true);"
+                    + "document.addEventListener('touchend',syncFab,true);"
+                    + "var style=document.createElement('style');"
+                    + "style.textContent='[data-component=\"terminal\"]{padding-left:4px!important;padding-right:4px!important;}';"
+                    + "if(document.head)document.head.appendChild(style);"
+                    + "document.addEventListener('touchstart',function(e){"
+                    + "var t=e.target&&e.target.closest?e.target.closest('[data-component=\"terminal\"]'):null;"
+                    + "if(!t)return;"
+                    + "t.__ocTouch={y:e.touches[0].clientY,last:e.touches[0].clientY};"
+                    + "},true);"
+                    + "document.addEventListener('touchmove',function(e){"
+                    + "var t=e.target&&e.target.closest?e.target.closest('[data-component=\"terminal\"]'):null;"
+                    + "if(!t||!t.__ocTouch)return;"
+                    + "var y=e.touches[0].clientY;"
+                    + "var dy=t.__ocTouch.last-y;"
+                    + "t.__ocTouch.last=y;"
+                    + "if(Math.abs(dy)<1)return;"
+                    + "var ev=new WheelEvent('wheel',{deltaY:dy*2,bubbles:true,cancelable:true});"
+                    + "t.dispatchEvent(ev);"
+                    + "if(ev.defaultPrevented)e.preventDefault();"
+                    + "},true);"
+                    + "document.addEventListener('touchend',function(e){"
+                    + "var t=e.target&&e.target.closest?e.target.closest('[data-component=\"terminal\"]'):null;"
+                    + "if(t)delete t.__ocTouch;"
+                    + "},true);"
+                    + "return 'term-ok';}catch(e){return 'ERR:'+e;}})()",
+                    v -> Log.d("OpenCode", "term-mobile: " + v));
+        } catch (Exception e) {
+            Log.d("OpenCode", "term-mobile fallo: " + e.getMessage());
         }
     }
 
@@ -4988,7 +5512,7 @@ private void refreshAppUpdateBtn() {
             if (safe.isEmpty()) safe = "opencode-download";
             if (safe.length() > 120) safe = safe.substring(safe.length() - 120);
             File out = new File(dir, safe);
-            // Si ya existe, se añade un numero para no pisarlo.
+            // Si ya existe, se aade un numero para no pisarlo.
             if (out.exists()) {
                 String base = safe.contains(".") ? safe.substring(0, safe.lastIndexOf('.'))
                         : safe;
@@ -5032,7 +5556,7 @@ private void refreshAppUpdateBtn() {
     private void startWebDownload(String url, String userAgent, String contentDisposition,
             String mimetype, long contentLength) {
         if (url == null || url.isEmpty()) {
-            snack(T("Descarga sin dirección", "Download without address"));
+            snack(T("Descarga sin direccin", "Download without address"));
             return;
         }
         try {
@@ -5080,7 +5604,7 @@ private void refreshAppUpdateBtn() {
             }
             long id = dm.enqueue(req);
             snack(T("Descargando ", "Downloading ") + name
-                    + T("…", "…"));
+                    + T("", ""));
             log("Descarga: " + name + " <- " + (local ? "servidor local" : "web"));
             // Se avisa al terminar, para saber si salio bien.
             watchDownload(id, name);
@@ -5143,7 +5667,7 @@ private void refreshAppUpdateBtn() {
                         final String reason = downloadFailureReason(
                                 c.getInt(c.getColumnIndexOrThrow(
                                         android.app.DownloadManager.COLUMN_REASON)));
-                        runOnUiThread(() -> snack(T("Falló la descarga: ", "Download failed: ")
+                        runOnUiThread(() -> snack(T("Fall la descarga: ", "Download failed: ")
                                 + reason));
                         log("Descarga fallida: " + name + " (" + reason + ")");
                         c.close();
@@ -5205,7 +5729,7 @@ private void refreshAppUpdateBtn() {
      *
      *  Sin esto, wrap_content mide el texto en una sola linea: si es largo
      *  el recuadro se estira hasta el borde derecho de la pantalla y la
-     *  segunda linea queda pegada a la izquierda (asimétrico). Al partirlo
+     *  segunda linea queda pegada a la izquierda (asimtrico). Al partirlo
      *  a mano el recuadro queda corto y el texto se sale.
      *
      *  Se mide el texto con el mismo tipo de letra y se decide:

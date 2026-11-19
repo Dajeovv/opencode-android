@@ -828,6 +828,31 @@ public final class LocalRuntime {
         }
     }
 
+    private static File selectPtyBinary(Context app, File nd) {
+        String version = BuildConfig.OPENCODE_VERSION;
+        try {
+            File rb = runtimeBinary(app);
+            if (rb != null) {
+                File parent = rb.getParentFile();
+                if (parent != null && parent.getName() != null
+                        && !parent.getName().isEmpty()) {
+                    version = parent.getName();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        // 2.3.x -> protocol 9 (binario 0.6.0); 2.2.x -> protocol 7 (0.4.0).
+        File chosen;
+        if (UpdateCheck.cmpVer(version, "2.3.0") >= 0) {
+            chosen = new File(nd, "libopencode_pty_v9.so");
+            if (!chosen.isFile()) chosen = new File(nd, "libopencode_pty.so");
+        } else {
+            chosen = new File(nd, "libopencode_pty_v7.so");
+            if (!chosen.isFile()) chosen = new File(nd, "libopencode_pty.so");
+        }
+        return chosen;
+    }
+
     private static Map<String, String> buildNativeEnv(Context app, File home, File tmp,
             File nd, int proxyPort) throws IOException {
         Map<String, String> env = new LinkedHashMap<>();
@@ -860,6 +885,24 @@ public final class LocalRuntime {
         env.put("OPENCODE_PASSWORD", serverPassword(app));
         env.put("OPENCODE_RUNTIME", "native");
         env.put("OPENCODE_NATIVE_LIB_DIR", nd.getAbsolutePath());
+        // opencode usa bun-pty para el terminal web. El binario trae builds
+        // de escritorio (glibc) que Android no puede cargar; este shim usa
+        // forkpty de bionic. Solo aplica al runtime nativo.
+        File bunpty = new File(nd, "libbunpty_android.so");
+        if (bunpty.isFile()) env.put("BUN_PTY_LIB", bunpty.getAbsolutePath());
+        if (BuildConfig.DEBUG) env.put("BUN_PTY_DEBUG", "1");
+
+        // opencode-pty: binario nativo para terminales persistentes. El que
+        // trae opencode embebido se extrae a files/ y SELinux bloquea su
+        // execve; este .so vive en nativeLibraryDir y si se puede ejecutar.
+        // El protocolo del daemon cambia entre versiones del runtime
+        // (2.2.x -> proto 7, 2.3.x -> proto 9); se elige el binario que
+        // coincide para evitar "protocol mismatch".
+        File ocpty = selectPtyBinary(app, nd);
+        if (ocpty != null && ocpty.isFile()) env.put("OPENCODE_PTY_BIN", ocpty.getAbsolutePath());
+        // El daemon de opencode-pty crea un socket Unix en este directorio;
+        // debe ser propiedad del app (SELinux bloquea /tmp y /var/run).
+        env.put("OPENCODE_PTY_SOCKET_DIR", new File(home, ".run").getAbsolutePath());
 
         File prefix = LocalToolbox.prefix(app);
         boolean hasToolbox = LocalToolbox.installed(app);
@@ -1033,6 +1076,9 @@ public final class LocalRuntime {
             }
             env.put("PROOT_LOADER", loader.getAbsolutePath());
             env.put("PROOT_TMP_DIR", prootTmp.getAbsolutePath());
+            File ocpty = selectPtyBinary(app, nd);
+            if (ocpty != null && ocpty.isFile()) env.put("OPENCODE_PTY_BIN", ocpty.getAbsolutePath());
+            env.put("OPENCODE_PTY_SOCKET_DIR", new File(home, ".run").getAbsolutePath());
             mkdirs(new File(home, ".local/share"));
             mkdirs(new File(home, ".cache"));
             mkdirs(new File(home, ".local/state"));
@@ -1079,6 +1125,9 @@ public final class LocalRuntime {
 
     public static void stop() {
         stopCurrent();
+        // WARP solo tiene sentido mientras el servidor esta vivo: al parar el
+        // runtime se cierra tambien el tunel (la preferencia se conserva).
+        WarpClient.stopAsync(null);
     }
 
     private static void stopCurrent() {

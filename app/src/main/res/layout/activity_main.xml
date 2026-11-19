@@ -268,13 +268,39 @@
                 android:textAppearance="?attr/textAppearanceHeadlineSmall"
                 android:textColor="@color/splash_text" />
 
-            <com.google.android.material.progressindicator.CircularProgressIndicator
+            <FrameLayout
+                android:id="@+id/splashProgressContainer"
+                android:layout_width="match_parent"
+                android:layout_height="8dp"
+                android:layout_marginTop="24dp"
+                android:background="@drawable/splash_progress_track"
+                android:clipToOutline="true">
+
+                <View
+                    android:id="@+id/splashProgressFill"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:background="#3b82f6" />
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/splashProgressLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:indeterminate="true"
-                app:indicatorColor="@color/splash_accent"
-                app:trackColor="@android:color/transparent" />
+                android:layout_marginTop="8dp"
+                android:text="0%"
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="#9ca3af" />
+
+            <TextView
+                android:id="@+id/splashToolboxHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:text=""
+                android:textAppearance="?attr/textAppearanceBodySmall"
+                android:textColor="#9ca3af" />
 
             <TextView
                 android:id="@+id/splashStatus"

@@ -12,7 +12,7 @@ android {
         applicationId "com.opencode.android"
         minSdk 26
         targetSdk 34
-        versionCode 177
+        versionCode 178
         versionName "5.0.3"
         buildConfigField "int", "SERVER_PORT", "4099"
         // Version del binario empaquetado en jniLibs. Actualizarla al cambiarlo.

@@ -74,25 +74,41 @@ public class RuntimeUpdateService extends Service {
     }
 
     private void runUpdate() throws Exception {
-        UpdateCheck.RuntimeAsset asset = UpdateCheck.opencodeRuntimeAsset();
+        String req = requestedVersion == null ? "" : requestedVersion.trim();
+        // Revertir a la version incluida en la app.
+        if (req.equalsIgnoreCase("bundled")) {
+            revertToBundled();
+            return;
+        }
+        UpdateCheck.RuntimeAsset asset;
+        if (req.isEmpty() || req.equalsIgnoreCase("latest")) {
+            asset = UpdateCheck.opencodeRuntimeAsset();
+        } else {
+            asset = UpdateCheck.opencodeRuntimeAsset(req);
+        }
         if (asset == null) {
             fail(ServerWatch.t(this, "No se pudo consultar la release",
                     "Could not read the release"));
             return;
         }
         String active = LocalRuntime.activeVersion(this);
-        if (UpdateCheck.cmpVer(asset.version, active) <= 0) {
-            markUpToDate(active, asset.version);
-            ServerWatch.notifyId(this, ServerWatch.NID_OC,
-                    ServerWatch.t(this, "OpenCode al día", "OpenCode is up to date"),
-                    active);
-            return;
+        // Solo se aborta por "ya actualizado" si no se pidio una version concreta.
+        if (req.isEmpty() || req.equalsIgnoreCase("latest")) {
+            if (UpdateCheck.cmpVer(asset.version, active) <= 0) {
+                markUpToDate(active, asset.version);
+                ServerWatch.notifyId(this, ServerWatch.NID_OC,
+                        ServerWatch.t(this, "OpenCode al día", "OpenCode is up to date"),
+                        active);
+                return;
+            }
         }
-        if (!requestedVersion.isEmpty()
-                && UpdateCheck.cmpVer(asset.version, requestedVersion) < 0) {
-            fail(ServerWatch.t(this, "La release cambió, reintenta",
-                    "The release changed, retry"));
-            return;
+        if (!req.isEmpty() && !req.equalsIgnoreCase("latest")
+                && !req.equalsIgnoreCase("bundled")) {
+            if (UpdateCheck.cmpVer(asset.version, req) < 0) {
+                fail(ServerWatch.t(this, "La release cambió, reintenta",
+                        "The release changed, retry"));
+                return;
+            }
         }
 
         File cache = new File(getCacheDir(), "runtime-update");
@@ -161,6 +177,38 @@ public class RuntimeUpdateService extends Service {
             notifyRuntimeRestarted(asset.version);
         } finally {
             deleteRecursive(cache);
+        }
+    }
+
+    private void revertToBundled() {
+        try {
+            SharedPreferences sp = getSharedPreferences("app", MODE_PRIVATE);
+            String version = sp.getString("opencode_runtime_version", "");
+            String path = sp.getString("opencode_runtime_path", "");
+            if (version != null && !version.isEmpty() && path != null && !path.isEmpty()) {
+                File dir = new File(path).getParentFile();
+                if (dir != null) deleteRecursive(dir);
+            }
+            sp.edit()
+                    .remove("opencode_runtime_version")
+                    .remove("opencode_runtime_path")
+                    .remove("opencode_runtime_digest")
+                    .remove("opencode_runtime_installed_at")
+                    .putString("upd_installed", BuildConfig.OPENCODE_VERSION)
+                    .putString("upd_latest", BuildConfig.OPENCODE_VERSION)
+                    .putString("upd_runtime", "local:" + BuildConfig.OPENCODE_VERSION)
+                    .putInt("upd_v", 5)
+                    .putLong("upd_ts", System.currentTimeMillis())
+                    .putBoolean("upd_pending", false)
+                    .putString("upd_notified", BuildConfig.OPENCODE_VERSION)
+                    .apply();
+            LocalRuntime.stop();
+            LocalServerService.start(this);
+            ServerWatch.notifyId(this, ServerWatch.NID_OC,
+                    ServerWatch.t(this, "OpenCode revertido", "OpenCode reverted"),
+                    BuildConfig.OPENCODE_VERSION);
+        } catch (Exception e) {
+            fail(ServerWatch.t(this, "No se pudo revertir", "Could not revert") + ": " + e.getMessage());
         }
     }
 

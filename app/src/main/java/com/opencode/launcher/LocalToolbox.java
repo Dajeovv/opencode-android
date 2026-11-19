@@ -64,6 +64,9 @@ public final class LocalToolbox {
         void onBytes(long done, long total);
     }
 
+    /** Callback opcional hacia la UI (MainActivity) para mostrar progreso. */
+    public static volatile Progress uiProgress = null;
+
     public static final class Pkg {
         public final String name;
         public final String version;
@@ -404,6 +407,14 @@ public final class LocalToolbox {
         Set<String> boot = readBootstrapList(ctx);
 
         // Fase 1: arranque (apt/dpkg y lo que necesitan).
+        int totalDebs = 0;
+        for (String n : names) if (n.endsWith(".deb")) totalDebs++;
+        int bootDone = 0;
+        int bootTotal = 0;
+        for (String n : names) if (n.endsWith(".deb")) {
+            String pp = nameFromDeb(n);
+            if (boot.contains(pp)) bootTotal++;
+        }
         for (String name : names) {
             if (!name.endsWith(".deb")) continue;
             String pkg = nameFromDeb(name);
@@ -414,6 +425,12 @@ public final class LocalToolbox {
             File deb = copyAsset(ctx, debs, name);
             extractDeb(deb, pref);
             deb.delete();
+            bootDone++;
+            if (p != null && totalDebs > 0) {
+                // Fase 1 ocupa del 0 al 30 %.
+                long done = (long) (bootDone * 30.0 / Math.max(1, bootTotal));
+                if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onBytes(done, 100);
+            }
         }
         prepareDpkgDirs(pref);
 
@@ -430,10 +447,12 @@ public final class LocalToolbox {
         if (p != null) p.onStep(ServerWatch.t(ctx,
                 "Registrando los paquetes (dpkg)...",
                 "Registering packages (dpkg)..."));
+        if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onBytes(30, 100);
         String dpkgOut = LocalRuntime.runInSandbox(ctx,
                 "dpkg --unpack /tmp/toolbox-debs/*.deb >/dev/null 2>&1; "
                         + "dpkg --configure -a 2>&1 | tail -5", 600000);
         Log.i(TAG, "dpkg: " + dpkgOut.replace("\n", " | "));
+        if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onBytes(85, 100);
 
         // Los scripts vuelven a venir con la ruta de Termux: dpkg los
         // acaba de desempaquetar. Se reescriben otra vez, ya con la
@@ -450,6 +469,7 @@ public final class LocalToolbox {
                 "Actualizando el indice de apt...",
                 "Updating the apt index..."));
         LocalRuntime.runInSandbox(ctx, "apt-get update -qq 2>&1 | tail -3", 300000);
+        if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onBytes(100, 100);
 
         List<String> done = new ArrayList<>();
         for (String name : names) {
@@ -749,9 +769,9 @@ public final class LocalToolbox {
                 + "if [ \"$1\" = \"install\" ] || [ \"$1\" = \"install-create\" ]"
                 + " || [ \"$1\" = \"install-write\" ] || [ \"$1\" = \"install-commit\" ]"
                 + " || [ \"$1\" = \"install-session\" ]; then\n"
-                + "  echo \"pm $1 no puede funcionar desde esta app: el servidor\"\n"
-                + "  echo \"del sistema no puede leer sus ficheros y el modo reverse es\"\n"
-                + "  echo \"de shell/root. Usa: termux-install-apk <ruta> [sha256]\"\n"
+                + "  echo \"pm $1 cannot work from this app: the system server\"\n"
+                + "  echo \"cannot read its files, and reverse mode is reserved\"\n"
+                + "  echo \"for shell/root. Use: termux-install-apk <path> [sha256]\"\n"
                 + "  exit 1\n"
                 + "fi\n"
                 + "# Sin las libs del prefijo: si no, los binarios del sistema no\n"
@@ -759,6 +779,47 @@ public final class LocalToolbox {
                 + "unset LD_LIBRARY_PATH\n"
                 + "exec /system/bin/pm \"$@\"\n";
         writeScript(pm, pmBody);
+
+        // Envoltorio compuesto: descarga + verifica hash + instala en un solo
+        // paso, para que el agente no tenga que encadenar varios comandos.
+        File installUrl = new File(bin, "termux-install-url");
+        try {
+            java.nio.file.Files.deleteIfExists(installUrl.toPath());
+        } catch (Exception ignored) {
+        }
+        String installUrlBody = "#!/system/bin/sh\n"
+                + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
+                + "URL=$1\n"
+                + "SHA=$2\n"
+                + "OPEN=$3\n"
+                + "if [ -z \"$URL\" ]; then\n"
+                + "  echo \"usage: termux-install-url <url> [sha256] [open]\" >&2\n"
+                + "  exit 1\n"
+                + "fi\n"
+                + "TMP=/storage/emulated/0/Download/termux-download-$$.apk\n"
+                + "echo \"downloading $URL\"\n"
+                + "if ! curl -sL -o \"$TMP\" \"$URL\"; then\n"
+                + "  echo \"download failed\" >&2\n"
+                + "  rm -f \"$TMP\"\n"
+                + "  exit 1\n"
+                + "fi\n"
+                + "if [ -n \"$SHA\" ]; then\n"
+                + "  REAL=$(sha256sum \"$TMP\" | awk '{print $1}')\n"
+                + "  if [ \"$REAL\" != \"$SHA\" ]; then\n"
+                + "    echo \"sha256 mismatch: expected $SHA got $REAL\" >&2\n"
+                + "    rm -f \"$TMP\"\n"
+                + "    exit 1\n"
+                + "  fi\n"
+                + "fi\n"
+                + "if [ -n \"$SHA\" ]; then\n"
+                + "  termux-install-apk \"$TMP\" \"$SHA\" \"$OPEN\"\n"
+                + "else\n"
+                + "  termux-install-apk \"$TMP\" \"\" \"$OPEN\"\n"
+                + "fi\n"
+                + "RC=$?\n"
+                + "rm -f \"$TMP\"\n"
+                + "exit $RC\n";
+        writeScript(installUrl, installUrlBody);
 
         // Comandos con root: el agente los manda por HTTP y la app usa su.
         // "am start" del sistema no vale desde una app normal: el comando se
@@ -805,7 +866,7 @@ public final class LocalToolbox {
                 + "    if [ -n \"$DATA\" ]; then\n"
                 + "      exec /system/bin/sh \"$OC_PREFIX/libexec/opencode-api\" open-url \"$DATA\"\n"
                 + "    fi\n"
-                + "    echo '{\"error\":\"am start necesita -d <url>, -n <paquete/actividad> o -p <paquete>\"}' >&2\n"
+                + "    echo '{\"error\":\"am start needs -d <url>, -n <package/activity> or -p <package>\"}' >&2\n"
                 + "    exit 1\n"
                 + "    ;;\n"
                 + "  *)\n"
@@ -822,7 +883,7 @@ public final class LocalToolbox {
         String opencodeBody = "#!/system/bin/sh\n"
                 + "OC_PREFIX=${PREFIX:-'" + pref.getAbsolutePath() + "'}\n"
                 + "# Version del runtime de opencode que usa la app.\n"
-                + "OC_VER=$(cat \"$OC_PREFIX/lib/oc-version\" 2>/dev/null)\n"
+                + "OC_VER=$(cat \"$OC_PREFIX/lib/termux-version\" 2>/dev/null)\n"
                 + "if [ -z \"$OC_VER\" ]; then OC_VER=desconocida; fi\n"
                 + "case \"${1:-}\" in\n"
                 + "  --version|-v|version)\n"
@@ -831,7 +892,7 @@ public final class LocalToolbox {
                 + "esac\n"
                 + "OC_BIN=\"$OC_PREFIX/runtime/$OC_VER/opencode\"\n"
                 + "if [ ! -f \"$OC_BIN\" ]; then\n"
-                + "  echo \"opencode $OC_VER (binario no encontrado)\" >&2\n"
+                + "  echo \"opencode $OC_VER (binary not found)\" >&2\n"
                 + "  exit 127\n"
                 + "fi\n"
                 + "exec /system/bin/linker64 \"$OC_BIN\" \"$@\"\n";
@@ -969,8 +1030,10 @@ public final class LocalToolbox {
                 + "    termux-open-app <package>   open an installed app\n"
                 + "    termux-open-file <path>     open a file with any viewer\n"
                 + "    termux-list-apps            list the installed apps\n"
-                + "    termux-install-apk <path>   install an APK\n"
-                + "    termux-install-status       state of the last install\n"
+                + "    termux-install-apk <path>       install an APK\n"
+                + "    termux-install-url <url>        download + verify + install in one step\n"
+                + "    termux-install-status           state of the last install\n"
+                + "    termux-install-status           state of the last install\n"
                 + "\n"
                 + "The app name is enough: termux-open-app brave opens\n"
                 + "com.brave.browser. `am start -n <pkg/activity>` and\n"
@@ -1071,6 +1134,10 @@ public final class LocalToolbox {
                 + "no dialog, the answer is {\"status\":\"installed\"}. The answer\n"
                 + "says which mode was used (\"mode\":\"root\" or \"mode\":\"dialog\").\n"
                 + "\n"
+                + "If you already have the URL and (optionally) the sha256, use\n"
+                + "termux-install-url <url> [sha256] [open] to do it in one step\n"
+                + "(download + verify + install), instead of chaining commands.\n"
+                + "\n"
                 + "Afterwards, termux-install-status tells you how it ended:\n"
                 + "installed, failed (with the reason) or pending (the user has\n"
                 + "not confirmed yet).\n"
@@ -1170,7 +1237,7 @@ public final class LocalToolbox {
             String v = LocalRuntime.activeVersion(ctx);
             if (v == null || v.isEmpty()) return;
             java.io.FileOutputStream out = new java.io.FileOutputStream(
-                    new File(lib, "oc-version"));
+                    new File(lib, "termux-version"));
             out.write(v.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             out.flush();
             out.close();

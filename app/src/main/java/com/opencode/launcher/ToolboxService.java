@@ -83,12 +83,14 @@ public class ToolboxService extends Service {
                     @Override
                     public void onStep(String message) {
                         update(message, 0, 0, true);
+                        if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onStep(message);
                     }
 
                     @Override
                     public void onBytes(long done, long total) {
                         update(ServerWatch.t(ToolboxService.this,
                                 "Descargando paquetes", "Downloading packages"), done, total, false);
+                        if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onBytes(done, total);
                     }
                 };
                 if (bundled) {
