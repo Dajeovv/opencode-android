@@ -18,7 +18,7 @@
 <p align="center">
   <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.3"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.4"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
+  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
 </p>
 
 <p align="center"><sub><b>v2</b> new UI &nbsp;·&nbsp; opencode 2.x &nbsp;·&nbsp; 175 MB &nbsp;&nbsp;|&nbsp;&nbsp; <b>v1</b> classic UI &nbsp;·&nbsp; opencode 1.x &nbsp;·&nbsp; 142 MB</sub></p>
@@ -100,7 +100,7 @@ v2 uses its own package and its own private storage. It does not read v1 session
 
 ### v1 — classic UI
 
-1. Download `OpenCodeAndroid-v4.0.4.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.4).
+1. Download `OpenCodeAndroid-v4.0.3.apk` from [Releases](https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3).
 2. Install it over an existing 4.0.x install to keep sessions, projects, runtime and root grant. The package id and signing key do not change.
 3. Open **OpenCode Android** and wait for the server.
 
@@ -114,7 +114,7 @@ On Windows PowerShell:
 
 ```powershell
 Get-FileHash .\OpenCodeAndroid-v5.0.3.apk -Algorithm SHA256
-Get-FileHash .\OpenCodeAndroid-v4.0.4.apk -Algorithm SHA256
+Get-FileHash .\OpenCodeAndroid-v4.0.3.apk -Algorithm SHA256
 ```
 
 The v1 package id is `com.opencode.launcher.next`; the `.next` suffix is historical and kept so 4.x updates preserve existing data. The v2 package id is `com.opencode.android`.
