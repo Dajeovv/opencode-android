@@ -1,13 +1,18 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-type="software" data-radius="soft" data-buttons="solid" data-motion>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="page-type" content="software">
+  <meta name="site-kind" content="software">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Mona+Sans:wdth,wght@75..125,400..600&family=Geist+Mono:wght@400..500&display=swap" rel="stylesheet">
   <title>OpenCode Android — a real coding agent on your phone</title>
-  <meta name="description" content="Run the real opencode coding agent natively on Android. Edit files, run shell commands, use the built-in terminal and control apps over wireless ADB. One arm64 APK. No PC, no Termux, no root.">
+  <meta name="description" content="Run the real opencode coding agent natively on Android. Edit files, run shell commands, use the built-in terminal and control apps over wireless ADB. One arm64 APK, with nothing to install on a PC.">
   <link rel="canonical" href="https://dajeovv.github.io/opencode-android/">
   <meta name="robots" content="index, follow">
-  <meta name="theme-color" content="#0b0d12">
+  <meta name="theme-color" content="#0a0d14">
   <meta name="author" content="Dajeovv">
   <meta name="google-site-verification" content="pDicnRztMlS-JAE16lQ0aXDozh0KovqPASFP-th9uyU">
   <link rel="icon" type="image/png" href="logo.png">
@@ -15,17 +20,21 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="OpenCode Android">
   <meta property="og:title" content="OpenCode Android — a real coding agent on your phone">
-  <meta property="og:description" content="Run the opencode agent natively on Android. Files, shell, terminal and wireless ADB control. One arm64 APK. No PC, no Termux, no root.">
+  <meta property="og:description" content="Run the opencode agent natively on Android. Files, shell, terminal and wireless ADB control. One arm64 APK, running entirely on the device.">
   <meta property="og:url" content="https://dajeovv.github.io/opencode-android/">
   <meta property="og:image" content="https://dajeovv.github.io/opencode-android/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="OpenCode Android — a real coding agent on your phone">
-  <meta name="twitter:description" content="Run the opencode agent natively on Android. No PC, no Termux, no root.">
+  <meta name="twitter:description" content="Run the opencode agent natively on Android. Files, shell and wireless ADB in one APK.">
   <meta name="twitter:image" content="https://dajeovv.github.io/opencode-android/og.png">
 
   <link rel="stylesheet" href="styles.css">
+  <!-- Hero entrance: words wait for motion instead of flashing, then stand after 700ms -->
+  <script>document.documentElement.classList.add('m-enter');setTimeout(function(){document.documentElement.classList.add('m-enter-done')},700)</script>
+  <!-- Moments: mark JS early so the dealt line can hide only what it reveals -->
+  <script>document.documentElement.classList.add('mo-js');setTimeout(function(){document.documentElement.classList.add('mo-safe')},2500)</script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -51,164 +60,225 @@
     <div class="wrap top-inner">
       <a class="brand" href="./">
         <img src="logo.png" alt="" width="34" height="34">
-        <span>OpenCode Android</span>
+        <span class="brand-text"><strong>OpenCode Android</strong><small>The agent, on your phone</small></span>
       </a>
       <nav class="nav" aria-label="Main">
         <a href="#features">Features</a>
         <a href="#install">Install</a>
         <a href="#faq">FAQ</a>
         <a href="https://github.com/Dajeovv/opencode-android" rel="noopener">GitHub</a>
-        <a class="nav-cta" href="https://github.com/Dajeovv/opencode-android/releases/latest">Download</a>
+        <a class="nav-cta" href="https://github.com/Dajeovv/opencode-android/releases/latest">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          Download
+        </a>
       </nav>
     </div>
   </header>
 
   <main id="main">
-    <section class="hero wrap">
+    <section class="hero wrap" data-enter aria-labelledby="hero-h">
       <div class="hero-copy">
-        <p class="eyebrow">Unofficial client for opencode · native edition</p>
-        <h1>The real coding agent,<br><span>natively on your phone.</span></h1>
-        <p class="lead">
-          OpenCode Android runs the opencode agent on your Android device. Edit files,
-          run shell commands, use the built-in terminal and control apps over wireless
-          ADB — no PC, no Termux, no root.
+        <!-- Plan: kind software. Deal: blue-black-cornflower palette (muted blue
+             accent over a near-black ground, fits a developer tool and answers the
+             app's own blue-black UI) + Mona Sans / Geist Mono. Hero: split, with the
+             real screenshot. One dealt moment: the statement below. -->
+        <p class="eyebrow m-fade" style="--d:0ms">Unofficial client for opencode · native edition</p>
+        <h1 id="hero-h">
+          <span class="m-line"><span style="--d:0ms">The real coding agent,</span></span>
+          <span class="m-line"><span style="--d:80ms"><span class="accent">natively on your phone.</span></span></span>
+        </h1>
+        <p class="lead m-fade" style="--d:340ms">
+          OpenCode Android runs the opencode agent on the phone itself. Edit real files,
+          run shell commands, use the built-in terminal and drive apps over wireless ADB.
+          One arm64 APK. Nothing to install on a PC.
         </p>
-        <div class="actions">
+        <div class="actions m-fade" style="--d:400ms">
           <a class="btn primary" href="https://github.com/Dajeovv/opencode-android/releases/latest">Download the APK</a>
           <a class="btn ghost" href="https://github.com/Dajeovv/opencode-android" rel="noopener">View on GitHub</a>
         </div>
-        <p class="meta">Android 8+ · arm64 · MIT · one APK</p>
+        <p class="meta m-fade" style="--d:460ms">Android 8+ &nbsp;/&nbsp; arm64 &nbsp;/&nbsp; MIT &nbsp;/&nbsp; one APK</p>
       </div>
-      <div class="hero-shot">
-        <img src="screenshot.png" width="720" height="1600"
-             alt="OpenCode Android running a shell session natively on an Android phone">
+      <div class="hero-stage">
+        <div class="hero-chip chip-left" aria-hidden="true">
+          <span class="chip-k">runtime</span><span class="chip-v">native arm64</span>
+          <span class="chip-dot"></span>
+        </div>
+        <div class="hero-chip chip-right" aria-hidden="true">
+          <span class="chip-k">setup</span><span class="chip-v">no Termux · no root</span>
+          <span class="chip-dot"></span>
+        </div>
+        <div class="hero-shot" data-enter-media>
+          <img src="screenshot.png" width="720" height="1600"
+               alt="OpenCode Android running a shell session natively on an Android phone">
+        </div>
+      </div>
+    </section>
+    <!-- Terminal demo: two lines per tool — install, then a real command
+         with its real output, typed out with a blinking caret. -->
+    <section class="tools wrap" aria-label="Tools included" data-term>
+      <p class="tools-label">One toolbox. Install anything from the chat.</p>
+      <div class="term">
+        <div class="term-bar"><span></span><span></span><span></span><em>shell</em></div>
+        <div class="term-body">
+          <div class="term-tool">
+            <img id="term-icon" src="icons/git.svg" alt="" width="52" height="52">
+            <strong id="term-name">Git</strong>
+          </div>
+          <div class="term-line"><span class="prompt">$</span> <span id="term-install"></span><span class="caret" aria-hidden="true"></span></div>
+          <div class="term-out" id="term-out" aria-live="polite"></div>
+          <div class="term-line term-line--cmd"><span class="prompt">$</span> <span id="term-cmd"></span></div>
+          <div class="term-out" id="term-result" aria-live="polite"></div>
+        </div>
       </div>
     </section>
 
     <section id="features" class="wrap section">
       <div class="section-head">
         <h2>Run opencode natively on Android</h2>
-        <p>The agent runs on the phone itself. No remote server, no desktop and no Linux sandbox for the agent.</p>
+        <p>The agent runs on the phone itself. No remote server needed, and the work stays on the device.</p>
       </div>
       <div class="grid cards">
-        <article class="card">
-          <h3>Native agent</h3>
-          <p>The opencode server and agent run directly on Android. The phone does the work, not a PC somewhere else.</p>
-        </article>
-        <article class="card">
-          <h3>Built-in terminal</h3>
-          <p>Open a terminal tab and run commands on the phone. The toolbox provides pkg, apt, git and Python when a command needs them.</p>
-        </article>
-        <article class="card">
-          <h3>File editing</h3>
-          <p>Inspect and edit real project files from the chat. The agent works on the files in your workspace, not on a copy.</p>
-        </article>
-        <article class="card">
-          <h3>Wireless ADB control</h3>
-          <p>Optional: pair wireless debugging and let the agent open apps, tap, type, read the UI and take screenshots.</p>
-        </article>
-        <article class="card">
-          <h3>No PC, no Termux, no root</h3>
-          <p>Install one arm64 APK on Android 8 or newer. Root is not required and the agent does not depend on Termux.</p>
-        </article>
-        <article class="card">
-          <h3>Updates that roll back</h3>
-          <p>The bundled opencode runtime updates from GitHub with checksum verification and automatic rollback if something fails.</p>
-        </article>
+        <article class="card"><span class="glyph" aria-hidden="true">01</span><h3>Native agent</h3><p>The opencode server and agent run directly on Android. The phone does the work, not a PC somewhere else.</p></article>
+        <article class="card"><span class="glyph" aria-hidden="true">02</span><h3>Built-in terminal</h3><p>A real interactive shell with git, python3, node, ssh, curl and apt/pkg preinstalled. Add clang, rust or ffmpeg straight from the chat.</p></article>
+        <article class="card"><span class="glyph" aria-hidden="true">03</span><h3>File editing</h3><p>Inspect and edit real project files from the chat. The agent works on the files in your workspace, not on a copy.</p></article>
+        <article class="card"><span class="glyph" aria-hidden="true">04</span><h3>Wireless ADB control</h3><p>Optional: pair wireless debugging and let the agent open apps, tap, type, read the UI and take screenshots.</p></article>
+        <article class="card"><span class="glyph" aria-hidden="true">05</span><h3>One APK, no setup</h3><p>Install one arm64 APK on Android 8 or newer. Root access is not needed and the agent runs without Termux.</p></article>
+        <article class="card"><span class="glyph" aria-hidden="true">06</span><h3>Updates that roll back</h3><p>The bundled opencode runtime updates from GitHub with checksum verification and automatic rollback if something fails.</p></article>
+      </div>
+    </section>
+
+    <section class="wrap section" aria-labelledby="arch-h">
+      <div class="section-head">
+        <h2 id="arch-h">One APK, the whole runtime</h2>
+        <p>The agent and its tools run as native processes on the device. No server across the room.</p>
+      </div>
+      <div class="diagram">
+        <p class="dg-flow">On the device &rarr;</p>
+        <div class="dg-node"><h3>Your phone</h3><p>OpenCode Android starts its local server and opens the chat as soon as it is healthy.</p></div>
+        <div class="dg-wire" aria-hidden="true"></div>
+        <div class="dg-lanes">
+          <div class="dg-lane"><img src="icons/ui-terminal.svg" alt=""> Interactive shell: pkg, apt, git, python</div>
+          <div class="dg-lane"><img src="icons/ui-file-code.svg" alt=""> File editing: the real files in your workspace</div>
+          <div class="dg-lane"><img src="icons/android.svg" alt=""> Wireless ADB: open apps, tap, read the UI</div>
+        </div>
       </div>
     </section>
 
     <section id="install" class="wrap section">
       <div class="section-head">
         <h2>Install in three steps</h2>
-        <p>Use the latest <strong>v5</strong> release. The v4 releases are the older Termux-based edition.</p>
+        <p>Pick your edition: <strong>v2 / v5</strong> is the new interface (opencode 2.x); <strong>v1 / v4</strong> is the classic chat-first app (opencode 1.x). Both are standalone and install side by side.</p>
       </div>
       <ol class="steps">
-        <li>
-          <span class="step-num">1</span>
-          <div>
-            <h3>Download the APK</h3>
-            <p>Get the latest <code>OpenCodeAndroid-v5.*.apk</code> from GitHub Releases.</p>
-          </div>
-        </li>
-        <li>
-          <span class="step-num">2</span>
-          <div>
-            <h3>Install it</h3>
-            <p>Allow installs from your browser or file manager if Android asks. Play Protect may warn about an app from outside the store.</p>
-          </div>
-        </li>
-        <li>
-          <span class="step-num">3</span>
-          <div>
-            <h3>Open and set up</h3>
-            <p>Follow the short first-run setup, choose a model and create a session.</p>
-          </div>
-        </li>
+        <li><span class="step-num">1</span><div><h3>Download the APK</h3><p>Get <code>OpenCodeAndroid-v5.*.apk</code> for v2, or <code>v4.*.apk</code> for the classic v1, from GitHub Releases.</p></div></li>
+        <li><span class="step-num">2</span><div><h3>Install it</h3><p>Allow installs from your browser or file manager if Android asks. Play Protect may warn about an app from outside the store.</p></div></li>
+        <li><span class="step-num">3</span><div><h3>Open and set up</h3><p>Follow the short first-run setup, choose a model and create a session.</p></div></li>
       </ol>
     </section>
 
     <section class="wrap section split">
-      <div class="panel">
-        <h2>Requirements</h2>
-        <ul class="plain">
-          <li>Android 8.0+ (API 26), arm64 device. Tested on Android 15.</li>
-          <li>Internet connection for model access and updates.</li>
-          <li>Wireless ADB is optional and only needed for device control.</li>
-          <li>Root is not required.</li>
-        </ul>
-      </div>
-      <div class="panel">
-        <h2>Watch it run</h2>
+      <div class="panel"><h2>Requirements</h2><ul class="plain">
+        <li>Android 8.0+ (API 26), arm64 device. Tested on Android 15.</li>
+        <li>Internet access; the first run unpacks about 200 MB of tools.</li>
+        <li>Grant All files access (Android 11+) so the agent can read your files.</li>
+        <li>Wireless ADB (device control) and root access are both optional.</li>
+      </ul></div>
+      <div class="panel"><h2>Watch it run</h2>
         <p>The demo shows the native edition running shell commands, writing files and checking that the agent is really running on ARM64.</p>
-        <p><a class="text-link" href="https://github.com/Dajeovv/opencode-android#screenshots" rel="noopener">Open the screenshots and demo on GitHub →</a></p>
+        <p><a class="text-link" href="https://github.com/Dajeovv/opencode-android#screenshots" rel="noopener">Open the screenshots and demo on GitHub&nbsp;→</a></p>
       </div>
+    </section>
+
+    <section class="statement wrap" data-moment="word-highlight" aria-labelledby="statement-h">
+      <p class="mo-wh__text" id="statement-h">The phone does the work. The agent, the shell and the files all live on the <strong>device</strong> — no PC in the room.</p>
     </section>
 
     <section id="faq" class="wrap section">
-      <div class="section-head">
-        <h2>Frequently asked questions</h2>
-      </div>
+      <div class="section-head"><h2>Frequently asked questions</h2></div>
       <div class="faq">
-        <details open>
-          <summary>Is OpenCode Android free?</summary>
-          <p>Yes. The app is MIT-licensed and the source code is on GitHub.</p>
-        </details>
-        <details>
-          <summary>Do I need Termux, a PC or root?</summary>
-          <p>No. The native edition runs the agent on the phone itself. Root is not required and Termux is not used.</p>
-        </details>
-        <details>
-          <summary>Is this the old Termux launcher?</summary>
-          <p>No. The v5 releases are the native edition. The older v4 releases used Termux; this page is about the native app.</p>
-        </details>
-        <details>
-          <summary>Is this the official opencode app?</summary>
-          <p>No. It is an unofficial Android client for the open-source opencode agent. It is not affiliated with the opencode project.</p>
-        </details>
-        <details>
-          <summary>Which models can I use?</summary>
-          <p>opencode's provider system: connect the providers you use and pick a model in the app.</p>
-        </details>
-        <details>
-          <summary>How do updates work?</summary>
-          <p>The app checks GitHub for new opencode runtime releases and for new versions of the app. Runtime updates are verified and can roll back automatically.</p>
-        </details>
+        <details open><summary>Is OpenCode Android free?</summary><p>Yes. The app is MIT-licensed and the source code is on GitHub.</p></details>
+        <details><summary>Do I need Termux, a PC or root?</summary><p>No. Both editions run the agent entirely on the phone. Termux and a PC are not used; root is optional, only for commands that need it.</p></details>
+        <details><summary>What are the two editions?</summary><p>v2 (new UI, opencode 2.x) and v1 (classic chat-first, opencode 1.x) are separate apps that install side by side with their own storage. Both are standalone; v1 sessions are not migrated to v2.</p></details>
+        <details><summary>Is this the official opencode app?</summary><p>No. It is an unofficial Android client for the open-source opencode agent. It is not affiliated with the opencode project.</p></details>
+        <details><summary>Which models can I use?</summary><p>The default is the free opencode.ai model. You can connect other providers in opencode settings and pick a model in the app.</p></details>
+        <details><summary>How do updates work?</summary><p>The app checks GitHub for new opencode runtime releases and for new versions of the app. Runtime updates are verified and can roll back automatically.</p></details>
       </div>
     </section>
-
   </main>
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <p>
-        <strong>OpenCode Android</strong> · MIT ·
-        <a href="https://github.com/Dajeovv/opencode-android" rel="noopener">GitHub</a> ·
-        <a href="https://github.com/Dajeovv/opencode-android/releases" rel="noopener">Releases</a> ·
-        <a href="https://github.com/Dajeovv/opencode-android/issues" rel="noopener">Issues</a>
-      </p>
+      <p><strong>OpenCode Android</strong> · MIT · <a href="https://github.com/Dajeovv/opencode-android" rel="noopener">GitHub</a> · <a href="https://github.com/Dajeovv/opencode-android/releases" rel="noopener">Releases</a> · <a href="https://github.com/Dajeovv/opencode-android/issues" rel="noopener">Issues</a></p>
       <p class="fine">Unofficial client for opencode. Not affiliated with the opencode project.</p>
     </div>
   </footer>
+
+  <script>
+    document.addEventListener('touchmove', function (e) {
+      if (e.touches.length > 1) e.preventDefault();
+    }, { passive: false });
+  </script>
+  <script type="module" src="assets/moments/moments.js"></script>
+  <script>
+    (function () {
+      var el = document.querySelector('[data-term]');
+      if (!el) return;
+      var icon = document.getElementById('term-icon');
+      var name = document.getElementById('term-name');
+      var install = document.getElementById('term-install');
+      var out = document.getElementById('term-out');
+      var cmd = document.getElementById('term-cmd');
+      var result = document.getElementById('term-result');
+      var caret = el.querySelector('.caret');
+      if (!icon || !name || !install || !out || !cmd || !result) return;
+      var tools = [
+        { n: 'Git',    i: 'git',    p: 'git',       c: 'git --version',            o: 'git version 2.56.1' },
+        { n: 'Python', i: 'python', p: 'python3',   c: 'python3 --version',        o: 'Python 3.14.10' },
+        { n: 'Node',   i: 'nodejs', p: 'nodejs',    c: 'node --version',           o: 'v26.13.1' },
+        { n: 'Bash',   i: 'bash',   p: 'bash',      c: 'bash --version | head -1', o: 'GNU bash, version 5.3.20(1)-release (aarch64-unknown-linux-android)' },
+        { n: 'curl',   i: 'curl',   p: 'curl',      c: 'curl --version | head -1', o: 'curl 8.23.0 (aarch64-unknown-linux-android) libcurl/8.23.0' },
+        { n: 'uname',  i: 'android',p: 'coreutils', c: 'uname -m',                 o: 'aarch64' }
+      ];
+      var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var timer = null;
+      function typeInto(node, text, done) {
+        var s = 0;
+        (function step() {
+          if (s <= text.length) { node.textContent = text.slice(0, s++); timer = setTimeout(step, 45); }
+          else done();
+        })();
+      }
+      function show(k) {
+        var tool = tools[k % tools.length];
+        icon.src = 'icons/' + tool.i + '.svg';
+        icon.alt = tool.n + ' logo';
+        name.textContent = tool.n;
+        install.textContent = ''; out.textContent = ''; cmd.textContent = ''; result.textContent = '';
+        var ic = 'pkg install ' + tool.p;
+        if (reduce) {
+          install.textContent = ic; out.textContent = 'ok'; cmd.textContent = tool.c; result.textContent = tool.o;
+          timer = setTimeout(function () { show(k + 1); }, 3400);
+          return;
+        }
+        caret.style.display = '';
+        typeInto(install, ic, function () {
+          caret.style.display = 'none'; out.textContent = 'ok';
+          timer = setTimeout(function () {
+            caret.style.display = '';
+            typeInto(cmd, tool.c, function () {
+              caret.style.display = 'none'; result.textContent = tool.o;
+              timer = setTimeout(function () { show(k + 1); }, 2400);
+            });
+          }, 700);
+        });
+      }
+      function start() { show(0); }
+      if (!('IntersectionObserver' in window)) { start(); return; }
+      var io = new IntersectionObserver(function (e) {
+        if (e[0].isIntersecting) { start(); io.disconnect(); }
+      }, { threshold: 0.2 });
+      io.observe(el);
+    })();
+  </script>
 </body>
 </html>
