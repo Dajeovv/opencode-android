@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dajeovv.github.io/opencode-android/sitemap.xml
