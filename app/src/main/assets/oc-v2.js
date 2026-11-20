@@ -28,6 +28,92 @@
  *    puente ocDownload, que lo escribe en Descargas/opencode.
  */
 (function () {
+  /*
+   * 0) El shell del agente y del terminal es fijo: el trampolin nativo del
+   *    APK (libocshell.so). Si se cambia a "sh", el agente pierde el
+   *    resolvedor de comandos y todo va mucho mas lento; ademas opencode
+   *    --version deja de funcionar. La UI v2 ofrece ese ajuste en
+   *    Ajustes > Servidor > Preferencias y lo guarda con un PATCH a
+   *    /api/experimental/config. Aqui se oculta la fila y se reescribe
+   *    cualquier intento para que el valor no pueda cambiar.
+   */
+  try {
+    if (!window.__ocShellLock && window.fetch) {
+      window.__ocShellLock = 1;
+      var nativeFetch = window.fetch.bind(window);
+
+      var shellPath = function () {
+        try {
+          if (window.ocConfig && ocConfig.shellPath) {
+            return String(ocConfig.shellPath() || "");
+          }
+        } catch (e) {}
+        return "";
+      };
+
+      window.fetch = function (input, init) {
+        try {
+          var u = new URL(
+            typeof input === "string" ? input : (input && input.url) || "",
+            location.href
+          );
+          var method = String(
+            (init && init.method) || (input && input.method) || "GET"
+          ).toUpperCase();
+          if (u.origin === location.origin &&
+              u.pathname === "/api/experimental/config" &&
+              method === "PATCH") {
+            var shell = shellPath();
+            if (shell) {
+              var opts = {};
+              if (init) {
+                for (var k in init) {
+                  if (Object.prototype.hasOwnProperty.call(init, k)) opts[k] = init[k];
+                }
+              }
+              opts.method = "PATCH";
+              opts.body = JSON.stringify({ shell: shell });
+              return nativeFetch(input, opts);
+            }
+            /* Sin puente: se responde como si se hubiera guardado, pero no
+               se reenvia nada al servidor. */
+            return Promise.resolve(new Response(null, { status: 204 }));
+          }
+        } catch (e) { /* se deja pasar la peticion original */ }
+        return nativeFetch(input, init);
+      };
+    }
+  } catch (e) { /* sin bloqueo de fetch */ }
+
+  try {
+    var shellStyle = document.createElement("style");
+    shellStyle.textContent =
+      '[data-component="settings-row"]:has([data-action="settings-shell"])' +
+      "{display:none!important}";
+    (document.head || document.documentElement).appendChild(shellStyle);
+
+    var hasSelector = false;
+    try {
+      hasSelector = !!(window.CSS && CSS.supports && CSS.supports("selector(:has(*))"));
+    } catch (e) {}
+    if (!hasSelector) {
+      /* WebView antiguo sin :has(): se oculta la fila en cuanto aparece. */
+      var hideShellRow = function () {
+        var el = document.querySelector('[data-action="settings-shell"]');
+        if (!el) return false;
+        var row = el.closest ? el.closest('[data-component="settings-row"]') : null;
+        if (row) row.style.setProperty("display", "none", "important");
+        return true;
+      };
+      if (!hideShellRow()) {
+        var shellObs = new MutationObserver(function () {
+          if (hideShellRow()) shellObs.disconnect();
+        });
+        shellObs.observe(document.documentElement, { childList: true, subtree: true });
+      }
+    }
+  } catch (e) { /* sin ocultar la fila */ }
+
   try {
     /* 3) descargas: el <a download> con blob: se resuelve aqui */
     if (!window.__ocDownloadShim && window.ocDownload) {

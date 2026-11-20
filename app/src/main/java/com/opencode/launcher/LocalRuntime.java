@@ -130,6 +130,19 @@ public final class LocalRuntime {
         return null;
     }
 
+    /**
+     * Shell fijo que usan el agente y el terminal. Android no deja hacer
+     * execve de scripts en files/, asi que el unico sitio ejecutable es
+     * nativeLibraryDir. La UI v2 no debe poder cambiarlo: se expone tambien
+     * al WebView para reescribir sus intentos de configuracion.
+     */
+    public static String shellPath(Context ctx) {
+        File nd = new File(ctx.getApplicationInfo().nativeLibraryDir);
+        File trampoline = new File(nd, "libocshell.so");
+        return (trampoline.isFile() ? trampoline : new File("/system/bin/sh"))
+                .getAbsolutePath();
+    }
+
     /** Binarios necesarios para ejecutar el servidor musl sin proot. */
     public static boolean nativeAvailable(Context ctx) {
         File nd = new File(ctx.getApplicationInfo().nativeLibraryDir);
@@ -266,12 +279,11 @@ public final class LocalRuntime {
         // Android no deja hacer execve de scripts en files/ (untrusted_app).
         // El unico sitio ejecutable es nativeLibraryDir, donde va este
         // trampolin; desde ahi se lanza el envoltorio con /system/bin/sh.
-        File trampoline = new File(nd, "libocshell.so");
-        File agentShell = trampoline.isFile() ? trampoline : new File("/system/bin/sh");
-        if (!trampoline.isFile()) {
+        File agentShell = new File(shellPath(app));
+        if (!new File(nd, "libocshell.so").isFile()) {
             Log.w(TAG, "falta libocshell.so en nativeLibraryDir; se usa /system/bin/sh");
         }
-        NativeRuntimeConfig.write(nativeConfigDir, config, agentShell.getAbsolutePath());
+        NativeRuntimeConfig.write(nativeConfigDir, agentShell.getAbsolutePath());
         Map<String, String> env = buildNativeEnv(app, home, tmp, nd, proxyPort);
         env.put("OPENCODE_CONFIG_DIR", nativeConfigDir.getAbsolutePath());
         // Las funciones que lanzan los ELF del prefijo con linker64 tambien

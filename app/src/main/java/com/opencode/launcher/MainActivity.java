@@ -2302,6 +2302,12 @@ public class MainActivity extends AppCompatActivity {
             return LocalRuntime.homeDir(MainActivity.this).getAbsolutePath();
         }
 
+        /** Shell fijo del agente/terminal (trampolin nativo del APK). */
+        @JavascriptInterface
+        public String shellPath() {
+            return LocalRuntime.shellPath(MainActivity.this);
+        }
+
         /**
          * Prepara el repo git de un proyecto antes de que el servidor lo vea.
          * Devuelve la raiz del repo (o el propio directorio si no se pudo).
