@@ -19,8 +19,6 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [5.0.4] - 2026-11-24
 
-Feature release for the 2.x edition (`com.opencode.android`, versionCode 179).
-
 ### Added
 
 - **Install new tools from the chat.** `pkg install` now uses the app's own
