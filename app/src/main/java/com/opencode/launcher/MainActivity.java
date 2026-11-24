@@ -159,6 +159,8 @@ public class MainActivity extends AppCompatActivity {
     private Runnable pendingRetry;
     private int retryAttempt = 0;
     private boolean splashDone = false;
+    /** Progreso maximo alcanzado en esta pasada (nunca retrocede). */
+    private int splashProgressPct = 0;
     private long splashStart = 0;
     private String pendingSplashSnack;
     private boolean fullscreen = false;
@@ -224,6 +226,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean rootGrantPending = false;
     /** Dialogo de Opciones abierto, para reflejar el root al volver de Magisk. */
     private androidx.appcompat.app.AlertDialog optionsDialog;
+    /** Evita abrir dos selectores de version si se toca dos veces seguidas. */
+    private boolean runtimePickerBusy = false;
     private ActivityResultLauncher<Intent> lockLauncher;
     /** Desbloqueo ya pasado en esta vida de la app (el bloqueo se pide una vez). */
     private boolean unlockedRun = false;
@@ -443,6 +447,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onStep(String message) {
                 runOnUiThread(() -> {
+                    if (splashDone || splashProgressPct >= 100) return;
                     if (splashStatus != null) splashStatus.setText(message);
                 });
             }
@@ -450,23 +455,8 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onBytes(long done, long total) {
                 runOnUiThread(() -> {
-                    if (splashProgressContainer != null && splashProgressFill != null && total > 0) {
-                        int pct = (int) Math.min(100, done * 100 / total);
-                        if (splashProgressContainer.getWidth() == 0) {
-                            splashProgressContainer.postDelayed(() -> {
-                                if (splashProgressContainer != null && splashProgressFill != null) {
-                                    android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
-                                    lp.width = (int) (splashProgressContainer.getWidth() * pct / 100.0);
-                                    splashProgressFill.setLayoutParams(lp);
-                                }
-                            }, 100);
-                        } else {
-                            android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
-                            lp.width = (int) (splashProgressContainer.getWidth() * pct / 100.0);
-                            splashProgressFill.setLayoutParams(lp);
-                        }
-                        if (splashProgressLabel != null) splashProgressLabel.setText(pct + "%");
-                    }
+                    if (splashDone || total <= 0) return;
+                    splashProgress((int) Math.min(100, done * 100 / total));
                 });
             }
         };
@@ -1323,21 +1313,71 @@ public class MainActivity extends AppCompatActivity {
             openAllFilesSettings();
             return;
         }
+        // La lista sale de la API de GitHub y en frio tarda unos segundos.
+        // Antes no se mostraba nada al tocar y parecia que el toque se habia
+        // perdido; ahora se avisa en el acto y no se lanzan dos consultas.
+        if (runtimePickerBusy) return;
+        runtimePickerBusy = true;
+
+        final androidx.appcompat.app.AlertDialog loading;
+        if (UpdateCheck.runtimeVersionsCached()) {
+            loading = null;
+        } else {
+            android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+            box.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int pad = (int) (24 * getResources().getDisplayMetrics().density);
+            box.setPadding(pad, pad, pad, pad);
+            android.widget.ProgressBar pb = new android.widget.ProgressBar(this);
+            pb.setIndeterminate(true);
+            android.widget.LinearLayout.LayoutParams pbLp =
+                    new android.widget.LinearLayout.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                            android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            pbLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            box.addView(pb, pbLp);
+            android.widget.TextView tv = new android.widget.TextView(this);
+            tv.setText(T("Cargando versiones...", "Loading versions..."));
+            tv.setGravity(android.view.Gravity.CENTER);
+            tv.setPadding(0, pad / 2, 0, 0);
+            box.addView(tv);
+            loading = new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle(T("Elegir version de OpenCode", "Choose OpenCode version"))
+                    .setView(box)
+                    .setNegativeButton(T("Cancelar", "Cancel"), null)
+                    .create();
+            loading.setOnDismissListener(d -> runtimePickerBusy = false);
+            loading.show();
+        }
+
         new Thread(() -> {
             java.util.List<String> versions = UpdateCheck.runtimeVersions();
             runOnUiThread(() -> {
+                if (loading != null) {
+                    boolean showing = loading.isShowing();
+                    if (showing) loading.dismiss();
+                    if (!showing) return; // el usuario cerro el aviso
+                }
+                runtimePickerBusy = false;
                 if (versions == null || versions.isEmpty()) {
                     snack(T("No se pudo consultar las versiones", "Could not fetch versions"));
                     return;
                 }
                 String active = LocalRuntime.activeVersion(this);
+                String bundled = BuildConfig.OPENCODE_VERSION;
                 java.util.List<String> filtered = new java.util.ArrayList<>();
                 for (String v : versions) {
-                    if (!v.equals(BuildConfig.OPENCODE_VERSION)) filtered.add(v);
+                    // Desde 2.2.0: se puede volver a una version anterior a
+                    // la incluida. La elegida queda marcada como manual y se
+                    // mantiene hasta elegir la incluida o actualizar a otra.
+                    if (UpdateCheck.cmpVer(v, "2.2.0") >= 0
+                            && UpdateCheck.cmpVer(v, bundled) != 0) {
+                        filtered.add(v);
+                    }
                 }
                 String[] items = new String[filtered.size() + 1];
-                items[0] = T("Version incluida (", "Bundled version (")
-                        + BuildConfig.OPENCODE_VERSION + ")";
+                items[0] = bundled
+                        + (bundled.equals(active) ? T(" (activa)", " (active)") : "")
+                        + T(" (recomendada)", " (recommended)");
                 for (int i = 0; i < filtered.size(); i++) {
                     String v = filtered.get(i);
                     items[i + 1] = v + (v.equals(active)
@@ -1370,6 +1410,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startLocalServer() {
+        // Nueva pasada: la barra vuelve a cero y solo puede avanzar. El
+        // toolbox sigue en segundo plano y no debe hacerla retroceder.
+        splashProgressPct = 0;
+        if (splashProgressFill != null) {
+            android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+            lp.width = 0;
+            splashProgressFill.setLayoutParams(lp);
+        }
+        if (splashProgressLabel != null) splashProgressLabel.setText("0%");
         new Thread(() -> {
             StringBuilder t = new StringBuilder();
             try {
@@ -1378,53 +1427,19 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     t.append(T("0) runtime local (proot)...\n", "0) local runtime (proot)...\n"));
                     runOnUiThread(() -> {
-                        if (splashProgressContainer != null && splashProgressFill != null) {
-                            int w = splashProgressContainer.getWidth();
-                            if (w == 0) {
-                                splashProgressContainer.postDelayed(() -> {
-                                    if (splashProgressContainer != null && splashProgressFill != null) {
-                                        android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
-                                        lp.width = (int) (splashProgressContainer.getWidth() * 0.05);
-                                        splashProgressFill.setLayoutParams(lp);
-                                        if (splashProgressLabel != null) splashProgressLabel.setText("5%");
-                                    }
-                                }, 100);
-                            } else {
-                                android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
-                                lp.width = (int) (w * 0.05);
-                                splashProgressFill.setLayoutParams(lp);
-                                if (splashProgressLabel != null) splashProgressLabel.setText("5%");
-                            }
-                        }
+                        splashProgress(5);
                         setSplashStatus(T("Arrancando servidor...", "Starting server..."));
                     });
                 }
                 LocalServerService.start(this);
-                // Espera a que el toolbox termine antes de contar el timeout
-                // del puerto: si no, el boton de Reintentar aparece a mitad.
-                long tbDeadline = System.currentTimeMillis() + 300000L;
-                while (!LocalToolbox.complete(this)
-                        && System.currentTimeMillis() < tbDeadline) {
-                    try {
-                        Thread.sleep(2000);
-                    } catch (InterruptedException ignored) {
-                    }
-                }
+                // El toolbox se instala en segundo plano (ToolboxService): no
+                // bloqueamos aqui. Cuando termine, ToolboxService reinicia el
+                // servidor para que el sandbox vea el PATH nuevo.
                 t.append(T("Servicio lanzado; esperando el puerto ", "Service started; waiting for port "))
                         .append(PORT).append("...\n");
                 boolean open = waitForPort(120000);
                 if (open) {
-                    runOnUiThread(() -> {
-                        if (splashProgressContainer != null && splashProgressFill != null) {
-                            int w = splashProgressContainer.getWidth();
-                            if (w > 0) {
-                                android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
-                                lp.width = (int) (w * 0.6);
-                                splashProgressFill.setLayoutParams(lp);
-                                if (splashProgressLabel != null) splashProgressLabel.setText("60%");
-                            }
-                        }
-                    });
+                    runOnUiThread(() -> splashProgress(60));
                 }
                 boolean httpOk = false;
                 if (open) {
@@ -1432,17 +1447,7 @@ public class MainActivity extends AppCompatActivity {
                             "Port open; waiting for the first HTTP 200...\n"));
                     httpOk = waitForHttp(45000);
                     if (httpOk) {
-                        runOnUiThread(() -> {
-                            if (splashProgressContainer != null && splashProgressFill != null) {
-                                int w = splashProgressContainer.getWidth();
-                                if (w > 0) {
-                                    android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
-                                    lp.width = w;
-                                    splashProgressFill.setLayoutParams(lp);
-                                    if (splashProgressLabel != null) splashProgressLabel.setText("100%");
-                                }
-                            }
-                        });
+                        runOnUiThread(() -> splashProgress(100));
                     }
                     if (httpOk && !BuildConfig.V2 && !BuildConfig.V2_LAB) applyAutoPermissions(autoPerm());
                 }
@@ -3745,7 +3750,6 @@ public class MainActivity extends AppCompatActivity {
             menu.getMenu().add(0, 2, 2, T("Panel de controles", "Controls panel"))
                     .setIcon(android.R.drawable.ic_menu_manage);
         }
-        menu.getMenu().add(0, 1, 1, T("Registro", "Log")).setIcon(android.R.drawable.ic_menu_info_details);
         menu.getMenu().add(0, 3, 3, T("Reiniciar servidor", "Restart server")).setIcon(android.R.drawable.ic_popup_sync);
         menu.getMenu().add(0, 4, 4, T("Detener servidor", "Stop server")).setIcon(android.R.drawable.ic_menu_close_clear_cancel);
         if (!BuildConfig.V2_LAB) {
@@ -3775,10 +3779,6 @@ public class MainActivity extends AppCompatActivity {
             int id = item.getItemId();
             if (id == 0 || id == 2) {
                 setFullscreen(false);
-                return true;
-            }
-            if (id == 1) {
-                showLogDialog();
                 return true;
             }
             if (id == 3) {
@@ -4331,6 +4331,30 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> {
             if (!splashDone && splashStatus != null) splashStatus.setText(m);
         });
+    }
+
+    /** Progreso del splash: solo avanza. El toolbox corre en segundo plano
+     *  y no puede hacer retroceder la barra cuando el servidor ya llego
+     *  al 100 %. */
+    private void splashProgress(int pct) {
+        if (pct < splashProgressPct) return;
+        splashProgressPct = Math.min(100, pct);
+        if (splashProgressLabel != null) splashProgressLabel.setText(splashProgressPct + "%");
+        if (splashProgressContainer == null || splashProgressFill == null) return;
+        if (splashProgressContainer.getWidth() == 0) {
+            splashProgressContainer.postDelayed(this::applySplashBar, 100);
+        } else {
+            applySplashBar();
+        }
+    }
+
+    private void applySplashBar() {
+        if (splashProgressContainer == null || splashProgressFill == null) return;
+        int w = splashProgressContainer.getWidth();
+        if (w == 0) return;
+        android.view.ViewGroup.LayoutParams lp = splashProgressFill.getLayoutParams();
+        lp.width = (int) (w * splashProgressPct / 100.0);
+        splashProgressFill.setLayoutParams(lp);
     }
 
     /**

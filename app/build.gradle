@@ -12,11 +12,11 @@ android {
         applicationId "com.opencode.android"
         minSdk 26
         targetSdk 34
-        versionCode 178
-        versionName "5.0.3"
+        versionCode 179
+        versionName "5.0.4"
         buildConfigField "int", "SERVER_PORT", "4099"
         // Version del binario empaquetado en jniLibs. Actualizarla al cambiarlo.
-        buildConfigField "String", "OPENCODE_VERSION", "\"2.2.0\""
+        buildConfigField "String", "OPENCODE_VERSION", "\"2.2.7\""
         // v2: runtime 2.x con la UI nueva (viewport, service worker, avisos).
         buildConfigField "boolean", "V2", "true"
         // Aislamiento del laboratorio. En la app real va en false: updates

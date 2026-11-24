@@ -115,6 +115,29 @@ public final class LocalToolbox {
     }
 
     /**
+     * Firma barata del prefijo para detectar instalaciones.
+     *
+     *  Solo mirar $PREFIX.lastModified() no vale: al instalar un paquete
+     *  cambian bin/, lib/ y var/lib/dpkg/status, no la raiz. La firma
+     *  combina mtime, numero de entradas y tamano, suficiente para disparar
+     *  fixupPrefix + CommandResolver.refresh sin recorrer el arbol entero.
+     */
+    public static String prefixSignature(File pref) {
+        if (pref == null) return "";
+        return sigPart(pref)
+                + "|" + sigPart(new File(pref, "bin"))
+                + "|" + sigPart(new File(pref, "lib"))
+                + "|" + sigPart(new File(pref, "var/lib/dpkg/status"))
+                + "|" + sigPart(new File(pref, "etc/apt"));
+    }
+
+    private static String sigPart(File f) {
+        if (f == null || !f.exists()) return "0:0:0";
+        String[] kids = f.list();
+        return f.lastModified() + ":" + (kids == null ? 0 : kids.length) + ":" + f.length();
+    }
+
+    /**
      * Deja el prefijo listo para usarse de forma nativa.
      *
      *  Los scripts vienen con la ruta de Termux en el interprete. Se
@@ -328,14 +351,27 @@ public final class LocalToolbox {
         File pref = prefix(ctx);
         if (!pref.isDirectory() && !pref.mkdirs()) throw new IOException("no prefix dir");
 
+        Set<String> now = new HashSet<>(installedPackages(ctx));
+        // Ya instalados: no hace falta re-descargar ni re-registrar. Asi, si
+        // un pkg install se corta por timeout, el siguiente es inmediato.
+        List<Pkg> toInstall = new ArrayList<>();
+        for (Pkg pkg : plan) if (!now.contains(pkg.name)) toInstall.add(pkg);
+        if (toInstall.isEmpty()) {
+            Log.i(TAG, "todos los paquetes ya estaban instalados");
+            writeAgentNotes(ctx);
+            if (CommandResolver.refresh(ctx) == null) {
+                Log.w(TAG, "no se pudo regenerar el resolvedor tras instalar");
+            }
+            return new ArrayList<>(now);
+        }
+        plan = toInstall;
         long total = 0;
         for (Pkg pkg : plan) total += pkg.size;
 
         long done = 0;
-        Set<String> now = new HashSet<>(installedPackages(ctx));
+        // Se conserva entre ejecuciones para reanudar descargas interrumpidas.
         File stage = new File(ctx.getCacheDir(), "tmp/toolbox-debs");
-        deleteTree(stage);
-        if (!stage.mkdirs() && !stage.isDirectory()) {
+        if (!stage.isDirectory() && !stage.mkdirs()) {
             throw new IOException("no staging dir: " + stage.getName());
         }
         for (Pkg pkg : plan) {
@@ -372,7 +408,15 @@ public final class LocalToolbox {
         new File(prefix(ctx), ".opencode-toolbox").createNewFile();
         writePkgShim(ctx, prefix(ctx));
         writeRuntimeVersion(ctx, prefix(ctx));
-        deleteTree(stage);
+        // Los binarios y wrappers recien instalados (java, aapt2...) deben
+        // entrar en oc-native-env.sh ya, sin reiniciar el servidor.
+        if (CommandResolver.refresh(ctx) == null) {
+            Log.w(TAG, "no se pudo regenerar el resolvedor tras instalar");
+        }
+        // Las instrucciones del entorno deben estar donde OpenCode las busca.
+        ensurePlatformJar(ctx, pref);
+        writeAgentNotes(ctx);
+        // stage se conserva para reanudar si se corta por timeout.
         return new ArrayList<>(now);
     }
 
@@ -464,12 +508,21 @@ public final class LocalToolbox {
         // Atajo de pip para las consultas de solo lectura.
         installPipShortcut(ctx, pref);
 
-        // Fase 3: el indice de paquetes para apt.
-        if (p != null) p.onStep(ServerWatch.t(ctx,
-                "Actualizando el indice de apt...",
-                "Updating the apt index..."));
-        LocalRuntime.runInSandbox(ctx, "apt-get update -qq 2>&1 | tail -3", 300000);
+        // Fase 3: el indice de paquetes para apt. Se lanza en segundo plano
+        // para no bloquear la instalacion: el toolbox se marca como completo
+        // en cuanto dpkg termina, y el indice se actualiza en paralelo.
+        // Las instalaciones del agente no dependen de este update: pkg install
+        // usa el indice propio del instalador verificado.
         if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onBytes(100, 100);
+        final Context bgCtx = ctx.getApplicationContext();
+        new Thread(() -> {
+            try {
+                LocalRuntime.runInSandbox(bgCtx, "apt-get update -qq 2>&1 | tail -3", 300000);
+                Log.i(TAG, "apt-get update en segundo plano completado");
+            } catch (Exception e) {
+                Log.w(TAG, "apt-get update en segundo plano fallo: " + e);
+            }
+        }, "apt-update-bg").start();
 
         List<String> done = new ArrayList<>();
         for (String name : names) {
@@ -480,6 +533,15 @@ public final class LocalToolbox {
         new File(pref, ".opencode-toolbox").createNewFile();
         writePkgShim(ctx, pref);
         writeRuntimeVersion(ctx, pref);
+        // Deja el resolvedor listo con el prefijo completo, sin esperar al
+        // hilo periodico ni a un reinicio del servidor.
+        if (CommandResolver.refresh(ctx) == null) {
+            Log.w(TAG, "no se pudo regenerar el resolvedor del toolbox");
+        }
+        // Deja las instrucciones del entorno donde OpenCode las busca:
+        // global (OPENCODE_CONFIG_DIR) y proyecto (raiz del workspace).
+        ensurePlatformJar(ctx, pref);
+        writeAgentNotes(ctx);
         deleteTree(stage);
         return done;
     }
@@ -641,6 +703,7 @@ public final class LocalToolbox {
     public static void refreshShim(Context ctx) {
         try {
             if (installed(ctx)) {
+                ensurePlatformJar(ctx, prefix(ctx));
                 writePkgShim(ctx, prefix(ctx));
         writeRuntimeVersion(ctx, prefix(ctx));
                 writeDeviceScripts(ctx, prefix(ctx));
@@ -977,9 +1040,6 @@ public final class LocalToolbox {
 
     /** Notas para el agente: root, API del telefono y bateria. */
     private static void writeAgentNotes(Context ctx) {
-        File dir = new File(ctx.getFilesDir(), "home/.config/opencode");
-        if (!dir.isDirectory() && !dir.mkdirs()) return;
-        File f = new File(dir, "AGENTS.md");
         boolean lab = "com.opencode.launcher.v2lab".equals(ctx.getPackageName());
         String rootNotes = lab
                 ? "## Root\nRoot is intentionally denied for this lab app. Do not use `su`,\n"
@@ -1061,6 +1121,78 @@ public final class LocalToolbox {
                 + "\n"
                 + "When something like that fails, use the command above instead\n"
                 + "of looking for another way round it.\n"
+                + "\n"
+                + "## Running compiled tools (aapt2, java, javac, d8, apksigner, clang, etc.)\n"
+                + "\n"
+                + "Compiled tools from pkg/apt (aapt2, java, javac, d8, apksigner,\n"
+                + "clang, rustc, go, ffmpeg, ...) work directly in the shell. The app's\n"
+                + "shell runs them natively; there is no need for oc-proot unless a\n"
+                + "command fails with Permission denied or inaccessible or not found.\n"
+                + "In that case, retry with oc-proot '<command>' as a fallback.\n"
+                + "\n"
+                + "Do NOT use oc-proot by default: it adds overhead and is only needed\n"
+                + "for package management (pkg, apt, dpkg) or when a tool fails natively.\n"
+                + "\n"
+                + "## Building an Android app (APK) in this environment\n"
+                + "\n"
+                + "There is no Android Studio/Gradle SDK here, but you can build a\n"
+                + "minimal APK with the tools of the prefix. The platform stubs are\n"
+                + "at $PREFIX/share/android.jar. If java/aapt2/d8/apksigner are\n"
+                + "missing, install them first:\n"
+                + "\n"
+                + "    pkg install openjdk-21 aapt2 d8 apksigner\n"
+                + "\n"
+                + "Then, for a minimal app (Java, no AndroidX):\n"
+                + "\n"
+                + "    mkdir -p app/src/main/java/com/example/holamundo\n"
+                + "    mkdir -p app/src/main/res/layout app/src/main/res/values\n"
+                + "    # ... write AndroidManifest.xml, MainActivity.java, layout, strings ...\n"
+                + "    javac -cp \"$PREFIX/share/android.jar\" -d out/classes \\\n"
+                + "      app/src/main/java/com/example/holamundo/MainActivity.java\n"
+                + "    d8 --lib \"$PREFIX/share/android.jar\" --min-api 26 \\\n"
+                + "      --output out/dex $(find out/classes -name '*.class')\n"
+                + "    aapt2 link -I \"$PREFIX/share/android.jar\" -o out/base.apk \\\n"
+                + "      --manifest app/src/main/AndroidManifest.xml \\\n"
+                + "      --min-sdk-version 26 --target-sdk-version 34\n"
+                + "    python3 -c 'import zipfile; z=zipfile.ZipFile(\"out/base.apk\",\"a\"); \\\n"
+                + "      z.write(\"out/dex/classes.dex\",\"classes.dex\"); z.close()'\n"
+                + "    keytool -genkeypair -keystore out/debug.keystore -storepass android \\\n"
+                + "      -keypass android -alias androiddebugkey \\\n"
+                + "      -dname \"CN=Android Debug,O=Android,C=US\" -keyalg RSA \\\n"
+                + "      -keysize 2048 -validity 10000\n"
+                + "    apksigner sign --ks out/debug.keystore --ks-pass pass:android \\\n"
+                + "      --key-pass pass:android --out out/app.apk out/base.apk\n"
+                + "    apksigner verify --verbose out/app.apk\n"
+                + "\n"
+                + "Keep the manifest minimal and avoid AndroidX/AppCompat (no\n"
+                + "network jars for them). Use android.app.Activity and plain views.\n"
+                + "Install the resulting APK with termux-install-apk <path>.\n"
+                + "\n"
+                + "## Installing additional packages (pkg/apt)\n"
+                + "\n"
+                + "Run pkg install (or apt install) normally:\n"
+                + "\n"
+                + "    pkg install openjdk-21 aapt2 d8 apksigner\n"
+                + "\n"
+                + "The app handles it with its verified installer: resolves\n"
+                + "dependencies, checks SHA-256 and registers the packages with dpkg.\n"
+                + "The command waits until it finishes and returns a real exit code,\n"
+                + "so check it before using the new tool. It prints the current step.\n"
+                + "\n"
+                + "Do NOT use apt/dpkg directly, do not set APT_CONFIG or DPKG_ROOT,\n"
+                + "and do not extract .deb files by hand: those binaries have the\n"
+                + "Termux prefix compiled in and fail outside proot.\n"
+                + "\n"
+                + "Run pkg install as its own command, not inside a pipeline or\n"
+                + "after &&; the wrapper only sees a command that starts with it.\n"
+                + "\n"
+                + "pkg install can take several minutes (JDK, aapt2...). Pass\n"
+                + "timeout 1800000 (30 min) to the shell tool; the default 120 s\n"
+                + "kills it. If it times out, rerun the same command: downloads\n"
+                + "are reused and already-installed packages are skipped.\n"
+                + "\n"
+                + "New commands (java, aapt2, ...) are usable as soon as pkg install\n"
+                + "returns: the shell environment is regenerated automatically.\n"
                 + "\n"
                 + "## Environment facts\n"
                 + "\n"
@@ -1152,9 +1284,44 @@ public final class LocalToolbox {
                 + "\n"
                 + "## Battery\n"
                 + batteryNotes;
-        try (java.io.FileWriter w = new java.io.FileWriter(f, false)) {
-            w.write(body);
-        } catch (IOException ignored) {
+        // OpenCode carga las instrucciones globales desde OPENCODE_CONFIG_DIR
+        // (home/.config/opencode-android) y las de proyecto desde la raiz del
+        // workspace (home/). Se escriben en todos esos sitios para que el
+        // agente las encuentre aunque cambie la ruta de configuracion.
+        String[] noteDirs = new String[] {
+            "home/.config/opencode",
+            "home/.config/opencode-android",
+            "home"
+        };
+        for (String d : noteDirs) {
+            File dir = new File(ctx.getFilesDir(), d);
+            if (!dir.isDirectory() && !dir.mkdirs()) continue;
+            File f = new File(dir, "AGENTS.md");
+            try (java.io.FileWriter w = new java.io.FileWriter(f, false)) {
+                w.write(body);
+            } catch (IOException ignored) {
+            }
+            f.setReadable(true, false);
+        }
+    }
+
+    /** Extrae android.jar (stubs de la plataforma) a $PREFIX/share/android.jar
+     *  para que el agente pueda compilar apps sin Android SDK. */
+    private static void ensurePlatformJar(Context ctx, File pref) {
+        File target = new File(pref, "share/android.jar");
+        if (target.isFile() && target.length() > 1024 * 1024) return;
+        try {
+            File parent = target.getParentFile();
+            if (parent != null && !parent.isDirectory()) parent.mkdirs();
+            try (java.io.InputStream in = ctx.getAssets().open("platform/android.jar");
+                 java.io.OutputStream out = new java.io.FileOutputStream(target)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            }
+            Log.i(TAG, "android.jar instalado en " + target);
+        } catch (Exception e) {
+            Log.w(TAG, "no se pudo instalar android.jar: " + e);
         }
     }
 
@@ -1175,10 +1342,16 @@ public final class LocalToolbox {
             // El paquete termux-tools trae el pkg de verdad: ese manda.
             return;
         }
+        String ocPkg = new File(bin, CommandResolver.PKG_NAME).getAbsolutePath();
         String body = "#!/system/bin/sh\n"
-                + nativeCurlPrelude(ctx, pref)
                 + "# Instalador de paquetes de OpenCode (paquetes Termux).\n"
                 + "# uso: pkg install git python ...\n"
+                + "# Si oc-pkg existe, se delega en el: espera, muestra el paso y\n"
+                + "# devuelve un codigo de salida real.\n"
+                + "if [ -f " + q(ocPkg) + " ]; then\n"
+                + "  exec /system/bin/sh " + q(ocPkg) + " \"pkg $*\"\n"
+                + "fi\n"
+                + nativeCurlPrelude(ctx, pref)
                 + "VERB=$1; shift\n"
                 + "PKGS=\"\"\n"
                 + "for p in \"$@\"; do PKGS=\"$PKGS,$p\"; done\n"
@@ -1349,6 +1522,117 @@ public final class LocalToolbox {
      * Solo se tocan ficheros de texto que empiezan por "#!" y cuya primera
      * linea mencione la ruta de Termux: el resto no se toca.
      */
+    /** Arreglo completo del prefijo para ejecucion nativa (sin proot).
+     *
+     *  Se ejecuta en cada arranque del servidor: reescribe shebangs, reapunta
+     *  enlaces simbolicos, sustituye rutas de Termux por las del prefijo real
+     *  en el cuerpo de los scripts y crea envoltorios para la JVM (java/javac),
+     *  que de otro modo quedan inaccesibles por los enlaces rotos de
+     *  update-alternatives. */
+    public static void fixupPrefix(File pref) {
+        if (pref == null || !pref.isDirectory()) return;
+        try { rewriteScriptHeaders(pref); } catch (Exception e) { Log.w(TAG, "rewriteScriptHeaders: " + e); }
+        try { fixTermuxSymlinks(pref); } catch (Exception e) { Log.w(TAG, "fixTermuxSymlinks: " + e); }
+        try { fixScriptPaths(pref); } catch (Exception e) { Log.w(TAG, "fixScriptPaths: " + e); }
+        try { ensureJavaWrappers(pref); } catch (Exception e) { Log.w(TAG, "ensureJavaWrappers: " + e); }
+    }
+
+    /** Sustituye /data/data/com.termux/files/usr por el prefijo real dentro del
+     *  cuerpo de los scripts, para que las rutas embebidas (jars, configs...)
+     *  apunten al prefijo que si existe en disco. */
+    private static void fixScriptPaths(File pref) {
+        File bin = new File(pref, "bin");
+        if (!bin.isDirectory()) return;
+        String realPrefix = pref.getAbsolutePath().replace("/data/user/0/", "/data/data/");
+        String fakePrefix = SANDBOX_PREFIX;
+        File[] files = bin.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (!f.isFile() || f.length() > 1024 * 1024) continue;
+            try {
+                byte[] data = java.nio.file.Files.readAllBytes(f.toPath());
+                String text = new String(data, java.nio.charset.StandardCharsets.UTF_8);
+                if (!text.contains(fakePrefix)) continue;
+                // Solo se reescribe si es texto (sin bytes nulos).
+                if (text.indexOf('\u0000') >= 0) continue;
+                String replaced = text.replace(fakePrefix, realPrefix);
+                if (replaced.equals(text)) continue;
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+                    out.write(replaced.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** Crea envoltorios java/javac que invocan la JVM real con el linker del
+     *  sistema, evitando los enlaces rotos de update-alternatives. */
+    private static String q(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
+    }
+
+    /** Envoltorios para TODO el toolchain del JDK (java, javac, jar,
+     *  jarsigner, keytool, d8...), no solo java/javac. update-alternatives
+     *  deja enlaces rotos a la ruta de Termux y, ademas, Android bloquea
+     *  execve en files/: sin envoltorio, el comando no existe. */
+    private static void ensureJavaWrappers(File pref) {
+        File jvmBase = new File(pref, "lib/jvm");
+        if (!jvmBase.isDirectory()) return;
+        File[] jvms = jvmBase.listFiles();
+        if (jvms == null) return;
+        File jvmDir = null;
+        for (File j : jvms) {
+            if (j.isDirectory() && j.getName().startsWith("java-")) {
+                if (jvmDir == null || j.getName().compareTo(jvmDir.getName()) > 0) {
+                    jvmDir = j;
+                }
+            }
+        }
+        if (jvmDir == null) return;
+        File realBin = new File(jvmDir, "bin");
+        if (!new File(realBin, "java").isFile()) return;
+        String libPath = new File(pref, "lib").getAbsolutePath();
+        File[] tools = realBin.listFiles();
+        if (tools == null) return;
+        for (File tool : tools) {
+            String name = tool.getName();
+            if (!tool.isFile() || !isElf(tool)) continue;
+            if (!name.matches("[A-Za-z0-9_.+-]+")) continue;
+            String target;
+            try {
+                target = tool.getCanonicalPath().replace("/data/user/0/", "/data/data/");
+            } catch (Exception e) {
+                target = tool.getAbsolutePath().replace("/data/user/0/", "/data/data/");
+            }
+            File w = new File(new File(pref, "bin"), name);
+            // Borra enlace roto o fichero anterior.
+            try { w.delete(); } catch (Exception ignored) { }
+            String body = "#!/system/bin/sh\n"
+                    + "LD_LIBRARY_PATH=" + q(libPath) + " /system/bin/linker64 "
+                    + q(target) + " \"$@\"\n";
+            try {
+                java.io.FileWriter fw = new java.io.FileWriter(w, false);
+                fw.write(body);
+                fw.close();
+                w.setExecutable(true, true);
+                w.setReadable(true, true);
+            } catch (Exception e) {
+                Log.w(TAG, "no se pudo crear wrapper " + name + ": " + e);
+            }
+        }
+    }
+
+    /** ¿Es un binario ELF? Los scripts se arreglan con rewriteScriptHeaders. */
+    private static boolean isElf(File f) {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            byte[] b = new byte[4];
+            if (in.read(b) != 4) return false;
+            return b[0] == 0x7f && b[1] == 'E' && b[2] == 'L' && b[3] == 'F';
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static void rewriteScriptHeaders(File pref) {
         File bin = new File(pref, "bin");
         if (!bin.isDirectory()) return;
@@ -1362,57 +1646,56 @@ public final class LocalToolbox {
         int changed = 0;
         for (File f : files) {
             if (!f.isFile()) continue;
-            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw")) {
-                if (raf.length() < 4 || raf.length() > 256 * 1024) continue;
-                byte[] head = new byte[(int) Math.min(raf.length(), 512)];
-                raf.seek(0);
-                raf.readFully(head);
-                String line = new String(head, java.nio.charset.StandardCharsets.UTF_8);
-                int nl = line.indexOf('\n');
-                String first = nl >= 0 ? line.substring(0, nl) : line;
+            try {
+                long len = f.length();
+                if (len < 4 || len > 256 * 1024) continue;
+                // Se lee el fichero entero: asi el resto nunca se calcula mal
+                // (antes, con menos de 512 bytes, se perdia todo salvo el
+                // shebang: d8, apksigner, top... quedaban vacios).
+                byte[] data = java.nio.file.Files.readAllBytes(f.toPath());
+                String text = new String(data, java.nio.charset.StandardCharsets.UTF_8);
+                int nl = text.indexOf('\n');
+                String first = nl >= 0 ? text.substring(0, nl) : text;
                 if (!first.startsWith("#!")) continue;
-                if (!first.contains("com.termux") && !first.contains("/data/user/0/")) {
-                    continue;
-                }
-                // Los scripts de shell usan el shell de Android (mksh). Los
-                // de bash se dejan con la ruta de Termux: se ejecutan dentro
-                // de proot, donde si hay bash y el prefijo esta montado.
-                //
-                // Los de python y perl apuntan al prefijo real de la app,
-                // que si existe en disco y se puede ejecutar con el linker.
                 String newFirst = first;
-                boolean bash = newFirst.contains("/bin/bash")
-                        || newFirst.contains("/bin/ba ");
-                if (bash) {
-                    if (!first.contains("com.termux")) continue;
-                    // Se dejan como estaban (con la ruta de Termux).
-                    continue;
-                }
-                if (newFirst.contains("/bin/sh")) {
-                    newFirst = newFirst.replaceAll("^#!\\s*/\\S*/bin/sh",
-                            "#!/system/bin/sh");
-                }
-                newFirst = newFirst.replace(SANDBOX_PREFIX, realPrefix);
-                // /data/user/0/<app> y /data/data/<app> son el mismo sitio:
-                // se deja la forma que usa el resto de la app.
-                newFirst = newFirst.replace("/data/user/0/", "/data/data/");
-                if (newFirst.contains("com.termux")) {
-                    // No se ha podido reescribir: se deja como estaba.
-                    continue;
-                }
-                byte[] nb = (newFirst + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                if (nb.length != (nl + 1 > 0 ? nl + 1 : first.length())) {
-                    // Cambia el tamano: se reescribe el fichero entero.
-                    byte[] rest = new byte[(int) (raf.length() - head.length)];
-                    raf.readFully(rest);
-                    try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
-                        out.write(nb);
-                        out.write(rest);
+                if (first.contains("com.termux") || first.contains("/data/user/0/")) {
+                    // Los scripts de shell usan el shell de Android (mksh). Los
+                    // de bash se dejan con la ruta de Termux: se ejecutan dentro
+                    // de proot, donde si hay bash y el prefijo esta montado.
+                    //
+                    // Los de python y perl apuntan al prefijo real de la app,
+                    // que si existe en disco y se puede ejecutar con el linker.
+                    boolean bash = newFirst.contains("/bin/bash")
+                            || newFirst.contains("/bin/ba ");
+                    if (bash) continue;
+                    if (newFirst.contains("/bin/sh")) {
+                        newFirst = newFirst.replaceAll("^#!\\s*/\\S*/bin/sh",
+                                "#!/system/bin/sh");
                     }
-                } else {
-                    raf.seek(0);
-                    raf.write(nb);
+                    newFirst = newFirst.replace(SANDBOX_PREFIX, realPrefix);
+                    // /data/user/0/<app> y /data/data/<app> son el mismo sitio:
+                    // se deja la forma que usa el resto de la app.
+                    newFirst = newFirst.replace("/data/user/0/", "/data/data/");
+                    if (newFirst.contains("com.termux")) {
+                        // No se ha podido reescribir: se deja como estaba.
+                        continue;
+                    }
                 }
+                String body = nl >= 0 ? text.substring(nl + 1) : "";
+                String out = newFirst + "\n" + body;
+                if ("#!/system/bin/sh".equals(newFirst)) {
+                    // d8, apksigner, r8... hacen "exec java". Un execve del
+                    // wrapper del prefijo esta prohibido (SELinux/W^X), asi
+                    // que se pasa por /system/bin/sh, igual que oc-shell.
+                    out = out.replace("exec java ",
+                            "exec /system/bin/sh " + realPrefix + "/bin/java ");
+                }
+                byte[] nb = out.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                if (java.util.Arrays.equals(nb, data)) continue;
+                try (java.io.FileOutputStream os = new java.io.FileOutputStream(f)) {
+                    os.write(nb);
+                }
+                f.setExecutable(true, true);
                 changed++;
             } catch (Exception ignored) {
             }

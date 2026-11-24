@@ -31,28 +31,91 @@ public class ToolboxService extends Service {
     private static final String CHANNEL = "toolbox";
     private static final int NID = 2203;
 
-    private volatile boolean running;
+    // Estado del instalador, visible para /install/status y para el hilo de
+    // fixup del prefijo. running empieza en install() para que oc-pkg no vea
+    // una ventana de "libre" entre la peticion y el arranque del servicio.
+    private static volatile boolean running;
+    private static volatile String lastError = "";
+    private static volatile String lastInstalled = "";
+    private static volatile String step = "";
+    private static volatile long done;
+    private static volatile long total;
+    private static final java.util.concurrent.atomic.AtomicBoolean CLAIMED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
-    public static void install(Context ctx, List<String> packages) {
+    /**
+     * Pide una instalacion. Devuelve false si ya hay otra en curso.
+     * El servicio se arranca en primer plano porque puede tardar minutos.
+     */
+    public static boolean install(Context ctx, List<String> packages) {
+        synchronized (ToolboxService.class) {
+            if (running) return false;
+            running = true;
+            lastError = "";
+            lastInstalled = "";
+            step = "queued";
+            done = 0;
+            total = 0;
+        }
         Intent i = new Intent(ctx, ToolboxService.class);
         i.setAction(ACTION_INSTALL);
         i.putExtra(EXTRA_PACKAGES, new ArrayList<>(packages));
         try {
             ctx.startForegroundService(i);
+            return true;
         } catch (Exception e) {
             Log.w(TAG, "no se pudo arrancar el servicio: " + e);
+            synchronized (ToolboxService.class) {
+                running = false;
+                lastError = String.valueOf(e.getMessage());
+            }
+            return false;
         }
     }
 
     /** Instala los paquetes que ya vienen dentro del APK (sin red). */
-    public static void installBundled(Context ctx) {
+    public static boolean installBundled(Context ctx) {
+        synchronized (ToolboxService.class) {
+            if (running) return false;
+            running = true;
+            lastError = "";
+            lastInstalled = "";
+            step = "queued";
+            done = 0;
+            total = 0;
+        }
         Intent i = new Intent(ctx, ToolboxService.class);
         i.setAction(ACTION_BUNDLED);
         try {
             ctx.startForegroundService(i);
+            return true;
         } catch (Exception e) {
             Log.w(TAG, "no se pudo arrancar el servicio: " + e);
+            synchronized (ToolboxService.class) {
+                running = false;
+                lastError = String.valueOf(e.getMessage());
+            }
+            return false;
         }
+    }
+
+    public static boolean isRunning() {
+        return running;
+    }
+
+    /** Estado en texto plano: facil de leer para oc-pkg (sin jq ni sed). */
+    public static String installStatus() {
+        return "running=" + (running ? 1 : 0) + "\n"
+                + "step=" + oneLine(step) + "\n"
+                + "error=" + oneLine(lastError) + "\n"
+                + "installed=" + oneLine(lastInstalled) + "\n"
+                + "done=" + done + "\n"
+                + "total=" + total + "\n";
+    }
+
+    private static String oneLine(String s) {
+        if (s == null) return "";
+        return s.replace('\r', ' ').replace('\n', ' ').trim();
     }
 
     @Override
@@ -70,8 +133,17 @@ public class ToolboxService extends Service {
         ArrayList<String> pkgs = intent.getStringArrayListExtra(EXTRA_PACKAGES);
         if (pkgs == null || pkgs.isEmpty()) pkgs = new ArrayList<>(LocalToolbox.DEFAULT_SET);
         final ArrayList<String> wanted = pkgs;
-        if (running) return START_NOT_STICKY;
+        // running ya puede estar en true porque install() lo marco al
+        // encolar. CLAIMED distingue ese caso de un arranque duplicado.
+        if (!CLAIMED.compareAndSet(false, true)) return START_NOT_STICKY;
         running = true;
+        if (!"queued".equals(step)) {
+            lastError = "";
+            lastInstalled = "";
+            done = 0;
+            total = 0;
+            step = "preparing";
+        }
         startForeground(NID, notify(
                 ServerWatch.t(this, "Instalando herramientas", "Installing tools"),
                 ServerWatch.t(this, "Preparando...", "Preparing..."), 0, 0, true));
@@ -82,15 +154,23 @@ public class ToolboxService extends Service {
                 LocalToolbox.Progress p = new LocalToolbox.Progress() {
                     @Override
                     public void onStep(String message) {
+                        step = oneLine(message);
+                        done = 0;
+                        total = 0;
                         update(message, 0, 0, true);
                         if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onStep(message);
                     }
 
                     @Override
-                    public void onBytes(long done, long total) {
+                    public void onBytes(long doneBytes, long totalBytes) {
+                        done = doneBytes;
+                        total = totalBytes;
                         update(ServerWatch.t(ToolboxService.this,
-                                "Descargando paquetes", "Downloading packages"), done, total, false);
-                        if (LocalToolbox.uiProgress != null) LocalToolbox.uiProgress.onBytes(done, total);
+                                "Descargando paquetes", "Downloading packages"),
+                                doneBytes, totalBytes, false);
+                        if (LocalToolbox.uiProgress != null) {
+                            LocalToolbox.uiProgress.onBytes(doneBytes, totalBytes);
+                        }
                     }
                 };
                 if (bundled) {
@@ -104,7 +184,11 @@ public class ToolboxService extends Service {
             }
             final String err = error;
             Log.i(TAG, "instalacion terminada err=" + err);
+            lastError = err == null ? "" : oneLine(err);
+            lastInstalled = err == null && !bundled ? String.join(",", wanted) : "";
+            step = "";
             running = false;
+            CLAIMED.set(false);
             // Quitar primero la notificacion de primer plano: si no, la de
             // resultado hereda el flag "ongoing" y no se puede descartar.
             stopForeground(true);
@@ -112,9 +196,14 @@ public class ToolboxService extends Service {
                 NotificationManager nm =
                         (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
                 if (nm != null) nm.cancel(NID);
-                // Se reinicia el servidor para que el sandbox coja el PATH nuevo.
-                LocalRuntime.stop();
-                LocalServerService.start(this);
+                // El prefijo y el resolvedor ya se regeneran al final de
+                // LocalToolbox.install(); no hace falta reiniciar el servidor.
+                // Solo se reinicia si arranco antes de existir el toolbox,
+                // porque entonces su entorno no tiene PREFIX ni el token.
+                if (LocalRuntime.running() && !LocalRuntime.startedWithToolbox()) {
+                    LocalRuntime.stop();
+                    LocalServerService.start(this);
+                }
                 selfTest(this);
             } else {
                 // Error visible pero descartable; nunca deja un aviso fijo.
@@ -135,29 +224,9 @@ public class ToolboxService extends Service {
                 "echo PATH=$PATH",
                 "git --version",
                 "python3 --version",
-                "pip3 --version",
                 "node --version",
-                "make --version | head -1",
-                "ssh -V",
-                "curl --version | head -1",
-                "wget --version | head -1",
                 "which pkg",
-                "dpkg --version | head -1",
-                "apt-get --version | head -1",
-                "dpkg -l | tail -1",
-                "apt-cache policy git | head -3",
-                "pkg list-installed 2>&1 | tail -1",
-                "termux-battery-status | head -c 120",
-                "termux-clipboard-get",
-                "termux-wifi-connectioninfo | head -c 120",
-                "termux-sensor-list | head -c 120",
-                "termux-clipboard-set 'installation complete'",
-                "termux-clipboard-get",
-                "termux-brightness",
-                "termux-volume",
-                "termux-sensor accelerometer | head -c 150",
-                "termux-toast 'hello from opencode'",
-                "termux-vibrate 200"
+                "dpkg --version | head -1"
         };
         for (String c : cmds) {
             String out = LocalRuntime.runInSandbox(ctx, c, 30000);

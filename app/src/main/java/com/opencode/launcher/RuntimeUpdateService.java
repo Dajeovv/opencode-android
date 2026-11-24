@@ -151,9 +151,14 @@ public class RuntimeUpdateService extends Service {
                     .putString("opencode_runtime_path", dest.getAbsolutePath())
                     .putString("opencode_runtime_digest", binaryHash)
                     .putLong("opencode_runtime_installed_at", System.currentTimeMillis())
+                    // Eleccion manual: permite usar una version anterior a la
+                    // incluida (por ejemplo, volver a 2.2.0).
+                    .putBoolean("opencode_runtime_manual",
+                            !req.isEmpty() && !req.equalsIgnoreCase("latest"))
                     .apply();
 
             LocalRuntime.stop();
+            waitForPortGone(8000);
             LocalServerService.start(this);
             if (!waitHealth(asset.version)) {
                 rollback(destDir);
@@ -194,6 +199,7 @@ public class RuntimeUpdateService extends Service {
                     .remove("opencode_runtime_path")
                     .remove("opencode_runtime_digest")
                     .remove("opencode_runtime_installed_at")
+                    .remove("opencode_runtime_manual")
                     .putString("upd_installed", BuildConfig.OPENCODE_VERSION)
                     .putString("upd_latest", BuildConfig.OPENCODE_VERSION)
                     .putString("upd_runtime", "local:" + BuildConfig.OPENCODE_VERSION)
@@ -203,10 +209,29 @@ public class RuntimeUpdateService extends Service {
                     .putString("upd_notified", BuildConfig.OPENCODE_VERSION)
                     .apply();
             LocalRuntime.stop();
-            LocalServerService.start(this);
+            waitForPortGone(8000);
+
+            boolean ok = false;
+            for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+                LocalServerService.start(this);
+                ok = waitHealth(BuildConfig.OPENCODE_VERSION);
+                if (!ok) {
+                    LocalRuntime.stop();
+                    waitForPortGone(4000);
+                }
+            }
+            if (!ok) {
+                fail(ServerWatch.t(this, "El binario incluido no arranco",
+                        "The bundled binary did not start"));
+                return;
+            }
             ServerWatch.notifyId(this, ServerWatch.NID_OC,
                     ServerWatch.t(this, "OpenCode revertido", "OpenCode reverted"),
                     BuildConfig.OPENCODE_VERSION);
+            // Avisa a la app abierta para que recargue la pagina: el servidor
+            // se ha reiniciado con la version incluida y la sesion anterior ya
+            // no vale.
+            notifyRuntimeRestarted(BuildConfig.OPENCODE_VERSION);
         } catch (Exception e) {
             fail(ServerWatch.t(this, "No se pudo revertir", "Could not revert") + ": " + e.getMessage());
         }
@@ -323,6 +348,19 @@ public class RuntimeUpdateService extends Service {
         return best;
     }
 
+    private void waitForPortGone(long timeoutMs) {
+        long end = SystemClock.elapsedRealtime() + timeoutMs;
+        while (SystemClock.elapsedRealtime() < end) {
+            if (healthVersion().isEmpty()) return;
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
     private boolean waitHealth(String version) {
         long end = SystemClock.elapsedRealtime() + 30000;
         while (SystemClock.elapsedRealtime() < end) {
@@ -394,10 +432,14 @@ public class RuntimeUpdateService extends Service {
                 .remove("opencode_runtime_path")
                 .remove("opencode_runtime_digest")
                 .remove("opencode_runtime_installed_at")
+                .remove("opencode_runtime_manual")
                 .apply();
         deleteRecursive(destDir);
         LocalRuntime.stop();
+        waitForPortGone(8000);
         LocalServerService.start(this);
+        waitHealth(BuildConfig.OPENCODE_VERSION);
+        notifyRuntimeRestarted(BuildConfig.OPENCODE_VERSION);
     }
 
     private void markInstalled(String version) {

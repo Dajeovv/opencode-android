@@ -67,22 +67,9 @@ public class LocalServerService extends Service {
         // foreground, asi que puede esperar en segundo plano.
         new Thread(() -> {
             try {
-                // La caja de herramientas se instala en segundo plano: se
-                // espera a que termine antes de arrancar el runtime, para que
-                // el agente no se use sin herramientas listas.
-                if (!LocalToolbox.complete(getApplicationContext())) {
-                    long deadline = System.currentTimeMillis() + 300000L;
-                    while (!LocalToolbox.complete(getApplicationContext())
-                            && System.currentTimeMillis() < deadline) {
-                        try {
-                            Thread.sleep(2000);
-                        } catch (InterruptedException ignored) {
-                        }
-                    }
-                }
-                // Con root, el home necesita "sdcard" como bind mount antes
-                // de arrancar el servidor: asi el selector muestra rutas
-                // limpias (~/sdcard/...) y no rutas con "..".
+                // La caja de herramientas se instala en segundo plano: no se
+                // espera a que termine para arrancar el runtime. Cuando acabe,
+                // ToolboxService reinicia el servidor con el PATH nuevo.
                 LocalRuntime.ensureSdcardMount(getApplicationContext());
                 boolean ok = LocalRuntime.start(getApplicationContext(), BuildConfig.SERVER_PORT);
                 if (ok) {
@@ -118,6 +105,36 @@ public class LocalServerService extends Service {
                 });
             }
         }, "local-runtime-start").start();
+
+        // Arreglo periodico del prefijo: tras instalar paquetes con pkg/apt, las
+        // rutas y enlaces rotos se corrigen y el resolvedor se regenera sin
+        // reiniciar el servidor. La firma cubre bin/, lib/, dpkg/status y
+        // etc/apt: mirar solo la raiz del prefijo no detectaba instalaciones.
+        // Se salta mientras el instalador trabaja para no competir por los
+        // mismos ficheros; al terminar, LocalToolbox ya refresca una vez.
+        new Thread(() -> {
+            String lastSig = "";
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    Thread.sleep(5000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                try {
+                    if (ToolboxService.isRunning()) continue;
+                    java.io.File pref = LocalToolbox.prefix(getApplicationContext());
+                    String sig = LocalToolbox.prefixSignature(pref);
+                    if (!sig.equals(lastSig)) {
+                        lastSig = sig;
+                        LocalToolbox.fixupPrefix(pref);
+                        CommandResolver.refresh(getApplicationContext());
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }, "prefix-fixup").start();
+
         return START_STICKY;
     }
 

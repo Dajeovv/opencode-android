@@ -17,6 +17,70 @@ adheres to [Semantic Versioning](https://semver.org/).
 - README and project docs now cover only the standalone 4.0.x app; the old
   setup guides were removed and the changelog starts at 4.0.0.
 
+## [5.0.4] - 2026-11-24
+
+Feature release for the 2.x edition (`com.opencode.android`, versionCode 179).
+
+### Added
+
+- **Install new tools from the chat.** `pkg install` now uses the app's own
+  installer, so packages such as Java and the Android build tools are
+  downloaded safely and are ready to use as soon as the install finishes.
+- **Building Android apps on the phone is now easier.** The app includes the
+  Android platform files and gives the agent a ready-made recipe to compile,
+  sign and install an APK.
+- **Keep your opencode version when the app updates.** If you picked a newer
+  or older opencode version, updating the app no longer switches you back to
+  the bundled one.
+- **Resume interrupted installs.** If a package install takes too long or
+  loses the connection, running the same command again continues where it
+  left off and skips what is already installed.
+- **See the install progress.** The chat shows the current step and whether
+  the install finished correctly.
+
+### Changed
+
+- **The app opens first, tools finish later.** You no longer have to wait for
+  the whole toolbox before the chat appears; tools install in the background
+  and become available when ready.
+- **The version picker is faster.** It responds immediately, lets you go back
+  to older opencode versions, and clearly marks the active and bundled
+  versions.
+- **The start screen progress no longer jumps backwards.**
+- **The terminal always uses the app's built-in shell.**
+
+### Fixed
+
+- **Package installs are more reliable.** They no longer fail when the
+  connection drops or another install is already running.
+- **New commands work right away.** Tools installed from packages run
+  directly in the shell; the old sandbox is only used when a command needs it.
+- **Scripts and Java tools installed from packages now run correctly.**
+- **The app repairs its tool paths automatically** after installing packages,
+  without restarting the server.
+- **Installing an APK and opening it in one step works again.**
+- **opencode updates are safer.** The app waits for the old server to stop,
+  checks the new version and rolls back if it does not start.
+
+## [5.0.3] - 2026-11-19
+
+Feature release for the 2.x edition (`com.opencode.android`, versionCode 178).
+
+### Added
+
+- Integrated terminal: `pkg`, `apt`, `git`, `python` and more, with touch
+  scrolling.
+- Built-in WARP for `opencode.ai` traffic, toggleable from the controls menu.
+- Open apps, links and files from the chat, including by app name.
+- Install APKs from the agent, with the system installer or silently on
+  rooted devices.
+- Faster shell tools and `pip` queries.
+
+### Fixed
+
+- The server password is no longer exposed in the agent's shell.
+- The status bar stays visible and the page fits below it.
+
 ## [5.0.2] - 2026-11-12
 
 Maintenance release for the 2.x edition (`com.opencode.android`, versionCode 176).

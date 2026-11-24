@@ -47,6 +47,8 @@ public final class LocalRuntime {
 
     private static Process process;
     private static String activeBinPath;
+    /** true si el servidor actual arranco con el prefijo ya instalado. */
+    private static volatile boolean startedWithToolbox;
 
     private LocalRuntime() {
     }
@@ -98,36 +100,49 @@ public final class LocalRuntime {
         }
     }
 
-    public static String activeVersion(Context ctx) {
+    /** Runtime descargado e instalado por el usuario, si sigue completo.
+     *
+     *  Se conserva al actualizar la app: antes solo se usaba si era mas
+     *  nuevo que el incluido, asi que una actualizacion de la app con un
+     *  runtime incluido mas reciente descartaba en silencio la version que
+     *  el usuario tenia instalada. Ahora la instalada manda mientras exista
+     *  y sea valida; para volver a la incluida esta el selector de version
+     *  ("bundled"). */
+    private static final class InstalledRuntime {
+        final String version;
+        final File file;
+
+        InstalledRuntime(String version, File file) {
+            this.version = version;
+            this.file = file;
+        }
+    }
+
+    private static InstalledRuntime installedRuntime(Context ctx) {
         try {
             SharedPreferences sp = ctx.getApplicationContext()
                     .getSharedPreferences(PREF, Context.MODE_PRIVATE);
             String version = sp.getString("opencode_runtime_version", "");
             String path = sp.getString("opencode_runtime_path", "");
-            if (version != null && !version.isEmpty() && path != null
-                    && new File(path).isFile()
-                    && UpdateCheck.cmpVer(version, BuildConfig.OPENCODE_VERSION) > 0) {
-                return version;
+            if (version == null || version.isEmpty() || path == null || path.isEmpty()) {
+                return null;
             }
+            File f = new File(path);
+            if (!f.isFile() || f.length() <= 10L * 1024 * 1024) return null;
+            return new InstalledRuntime(version, f);
         } catch (Exception ignored) {
+            return null;
         }
-        return BuildConfig.OPENCODE_VERSION;
+    }
+
+    public static String activeVersion(Context ctx) {
+        InstalledRuntime r = installedRuntime(ctx);
+        return r != null ? r.version : BuildConfig.OPENCODE_VERSION;
     }
 
     public static File runtimeBinary(Context ctx) {
-        try {
-            SharedPreferences sp = ctx.getApplicationContext()
-                    .getSharedPreferences(PREF, Context.MODE_PRIVATE);
-            String version = sp.getString("opencode_runtime_version", "");
-            String path = sp.getString("opencode_runtime_path", "");
-            if (version != null && !version.isEmpty() && path != null
-                    && UpdateCheck.cmpVer(version, BuildConfig.OPENCODE_VERSION) > 0) {
-                File f = new File(path);
-                if (f.isFile() && f.length() > 10L * 1024 * 1024) return f;
-            }
-        } catch (Exception ignored) {
-        }
-        return null;
+        InstalledRuntime r = installedRuntime(ctx);
+        return r != null ? r.file : null;
     }
 
     /**
@@ -200,6 +215,11 @@ public final class LocalRuntime {
         }
     }
 
+    /** true si el servidor actual se arranco con el prefijo ya presente. */
+    public static boolean startedWithToolbox() {
+        return startedWithToolbox;
+    }
+
     public static boolean start(Context ctx, int port) throws IOException {
         synchronized (LOCK) {
             if (process != null && process.isAlive()) {
@@ -269,7 +289,9 @@ public final class LocalRuntime {
         // claves nuestras si el usuario ya tiene las suyas).
         File nativeConfigDir = new File(home, ".config/opencode-android");
         mkdirs(nativeConfigDir);
-        File binDir = LocalToolbox.installed(app)
+        boolean hasToolbox = LocalToolbox.installed(app);
+        startedWithToolbox = hasToolbox;
+        File binDir = hasToolbox
                 ? new File(LocalToolbox.prefix(app), "bin")
                 : new File(home, "bin");
         // Los scripts del prefijo se dejan apuntando a la ruta real para
@@ -369,6 +391,7 @@ public final class LocalRuntime {
         copyIfNeeded(new File(nd, "libstdcxx.so"), new File(lib, "libstdc++.so.6"));
         copyIfNeeded(new File(nd, "libgcc_s.so"), new File(lib, "libgcc_s.so.1"));
 
+        startedWithToolbox = LocalToolbox.installed(app);
         Map<String, String> env = buildEnv(app, home, tmp, etc, lib, nd, loader, prootTmp);
         List<String> cmd = prootCmd(app, home, tmp, etc, musl, proot, env);
         cmd.add(bin.getAbsolutePath());

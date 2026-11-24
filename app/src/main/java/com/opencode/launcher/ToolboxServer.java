@@ -202,6 +202,13 @@ public final class ToolboxServer {
             String out = LocalRuntime.runInSandbox(ctx, cmd, 60000);
             return "{\"ok\":true,\"out\":" + jsonString(out) + "}";
         }
+        // Estado del instalador en texto plano. oc-pkg lo consulta para
+        // esperar a que termine y mostrar el paso actual, sin depender de
+        // utilidades del prefijo para parsear JSON.
+        if (path.startsWith("/install/status")) {
+            if (!authorized(ctx, q, headers)) return "{\"ok\":false,\"error\":\"denied\"}";
+            return ToolboxService.installStatus();
+        }
         if (path.startsWith("/install")) {
             if (!authorized(ctx, q, headers)) return "{\"ok\":false,\"error\":\"denied\"}";
             List<String> names = new ArrayList<>();
@@ -211,7 +218,9 @@ public final class ToolboxServer {
                 names.add(n);
             }
             if (names.isEmpty()) return "{\"ok\":false,\"error\":\"no packages\"}";
-            ToolboxService.install(ctx, names);
+            if (!ToolboxService.install(ctx, names)) {
+                return "{\"ok\":false,\"busy\":true,\"error\":\"installer busy\"}";
+            }
             return "{\"ok\":true,\"queued\":" + names.size() + "}";
         }
         return "{\"ok\":false,\"error\":\"not found\"}";

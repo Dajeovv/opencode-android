@@ -226,6 +226,15 @@ public class UpdateCheck {
         return null;
     }
 
+    /** true si la lista de releases ya esta en cache (sin tocar la red). */
+    static boolean runtimeVersionsCached() {
+        String url = "https://api.github.com/repos/" + OPENCODE_REPO
+                + "/releases?per_page=100";
+        Long ts = CACHE_TS.get(url);
+        return ts != null && System.currentTimeMillis() - ts < CACHE_TTL_MS
+                && CACHE.get(url) != null;
+    }
+
     /** Lista de versiones disponibles de la rama actual (mas nueva primero). */
     public static java.util.List<String> runtimeVersions() {
         java.util.List<String> out = new java.util.ArrayList<>();

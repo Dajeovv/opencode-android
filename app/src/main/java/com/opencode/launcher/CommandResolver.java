@@ -1,5 +1,6 @@
 package com.opencode.launcher;
 
+import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
@@ -41,6 +42,8 @@ public final class CommandResolver {
     public static final String NATIVE_ENV_NAME = "oc-native-env.sh";
     /** Ejecutor de comandos del prefijo (scripts) de forma nativa. */
     public static final String RUN_NAME = "oc-run";
+    /** Instalador de paquetes verificado: habla con ToolboxServer. */
+    public static final String PKG_NAME = "oc-pkg";
     public static final String ADB_NAME = "oc-adb";
     public static final String ADB_SERVER_NAME = "oc-adb-server";
 
@@ -141,6 +144,16 @@ public final class CommandResolver {
             throw new IOException("no se pudo crear " + binDir);
         }
         File prefixDir = binDir.getParentFile();
+        // Arreglo del prefijo para ejecucion nativa (sin proot): reescribe
+        // shebangs, rutas de Termux y crea envoltorios java/javac. Se hace
+        // antes del scan() para que los scripts arreglados se registren como
+        // funciones nativas. Idempotente: no hace nada si el prefijo no ha
+        // cambiado.
+        try {
+            LocalToolbox.fixupPrefix(prefixDir);
+        } catch (Exception e) {
+            Log.w(TAG, "fixupPrefix fallo: " + e);
+        }
         File prefixLib = prefixDir == null ? new File(TERMUX_PREFIX, "lib")
                 : new File(prefixDir, "lib");
         LinkedHashSet<String> libs = new LinkedHashSet<>();
@@ -160,14 +173,55 @@ public final class CommandResolver {
         write(new File(binDir, ADB_NAME), adbScript(binDir, home));
         File shell = new File(binDir, SHELL_NAME);
         write(shell, shellScript(scan.prootNames));
+        write(new File(binDir, PKG_NAME), pkgScript(binDir, home, nd, prefixDir));
         Log.i(TAG, "resolvedor listo: " + scan.functions.size() + " nativos, "
                 + scan.prootNames.size() + " a proot; " + shell);
         return shell;
     }
 
+    /**
+     * Regenera el resolvedor con el prefijo actual.
+     *
+     *  Se llama cuando el prefijo cambia (pkg/apt, instalacion del toolbox)
+     *  para que los binarios recien instalados aparezcan sin reiniciar el
+     *  servidor. Es idempotente y barato si no hay nada nuevo.
+     */
+    public static File refresh(Context ctx) {
+        if (ctx == null) return null;
+        File home = new File(ctx.getFilesDir(), "home");
+        File nd = new File(ctx.getApplicationInfo().nativeLibraryDir);
+        File tmp = new File(ctx.getCacheDir(), "tmp");
+        File etc = new File(home, ".oc-etc");
+        File binDir = LocalToolbox.installed(ctx)
+                ? new File(LocalToolbox.prefix(ctx), "bin")
+                : new File(home, "bin");
+        try {
+            return install(home, nd, tmp, etc, binDir);
+        } catch (IOException e) {
+            Log.w(TAG, "no se pudo regenerar el resolvedor: " + e);
+            return null;
+        }
+    }
+
     private static void write(File file, String body) throws IOException {
-        try (FileWriter w = new FileWriter(file, false)) {
+        // Escritura atomica: el shell del agente puede estar leyendo oc-shell
+        // o el env mientras se regeneran. Un rename entrega siempre una
+        // version completa, nunca un script a medias.
+        File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
+        try (FileWriter w = new FileWriter(tmp, false)) {
             w.write(body);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        tmp.setExecutable(true, true);
+        //noinspection ResultOfMethodCallIgnored
+        tmp.setReadable(true, false);
+        if (!tmp.renameTo(file)) {
+            // Sistema de archivos sin rename atomico: se escribe directo.
+            try (FileWriter w = new FileWriter(file, false)) {
+                w.write(body);
+            }
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
         }
         //noinspection ResultOfMethodCallIgnored
         file.setExecutable(true, true);
@@ -213,11 +267,17 @@ public final class CommandResolver {
                         // Escrito en bash: el shell de Android (mksh) no lo
                         // entiende. A proot, donde si hay bash.
                         proot.add(name);
-                    } else if (SCRIPT_NAMES.contains(name)
-                            || VALID_NAME.matcher(name).matches()) {
+                    } else if (SCRIPT_NAMES.contains(name)) {
+                        // pkg/apt/dpkg: necesitan el prefijo montado en su
+                        // ruta de Termux y ejecutan mantenimiento de paquetes.
+                        proot.add(name);
+                    } else if (VALID_NAME.matcher(name).matches()) {
                         if (!seen.add(name)) continue;
                         scan.functions.add(scriptFunction(name, file.getAbsolutePath()));
                     } else {
+                        // Guion o punto: no es un nombre POSIX valido. Si se
+                        // emitiera una funcion, dash rompe TODO el env con
+                        // "Bad function name" (dpkg-buildapi, dpkg-realpath...).
                         proot.add(name);
                     }
                     continue;
@@ -267,7 +327,9 @@ public final class CommandResolver {
             String line = new String(head, 0, n, java.nio.charset.StandardCharsets.UTF_8);
             int nl = line.indexOf('\n');
             if (nl > 0) line = line.substring(0, nl);
-            return line.contains("/bash") || line.contains("/ba ");
+            return line.contains("/bash") || line.contains("/ba ")
+                    || line.contains("env bash") || line.contains("env -S bash")
+                    || line.contains("env -s bash");
         } catch (Exception e) {
             return false;
         }
@@ -334,6 +396,31 @@ public final class CommandResolver {
                 + "INTERP=\"\"\n"
                 + "if [ -f \"$CMD\" ]; then IFS= read -r INTERP < \"$CMD\" 2>/dev/null; fi\n"
                 + "INTERP=${INTERP#\\#!}\n"
+                + "while [ \"${INTERP# }\" != \"$INTERP\" ]; do INTERP=${INTERP# }; done\n"
+                + "# /usr/bin/env python3 -> python3; /usr/bin/env -S python3 -u -> python3\n"
+                + "case \"$INTERP\" in\n"
+                + "  \"*/env -S \"*|\"*/env -s \"*)\n"
+                + "    INTERP=${INTERP#*/env }; INTERP=${INTERP#-S }; INTERP=${INTERP#-s }\n"
+                + "    INTERP=${INTERP%% *} ;;\n"
+                + "  \"*/env \"*)\n"
+                + "    INTERP=${INTERP#*/env }; INTERP=${INTERP%% *} ;;\n"
+                + "  *) INTERP=${INTERP%% *} ;;\n"
+                + "esac\n"
+                + "# Si el shebang aun apunta al prefijo de Termux, se traduce al real.\n"
+                + "case \"$INTERP\" in\n"
+                + "  /data/data/com.termux/files/usr/*)\n"
+                + "    INTERP=" + q(realPrefix) + "\"${INTERP#/data/data/com.termux/files/usr}\" ;;\n"
+                + "  /data/user/0/com.termux/files/usr/*)\n"
+                + "    INTERP=" + q(realPrefix) + "\"${INTERP#/data/user/0/com.termux/files/usr}\" ;;\n"
+                + "esac\n"
+                + "# Un interprete sin barra (python3, bash) se busca en el prefijo.\n"
+                + "case \"$INTERP\" in\n"
+                + "  */*) ;;\n"
+                + "  python*|python)\n"
+                + "    if [ -f " + q(realPrefix + "/bin/") + "\"$INTERP\" ]; then\n"
+                + "      INTERP=" + q(realPrefix + "/bin/") + "\"$INTERP\"\n"
+                + "    fi ;;\n"
+                + "esac\n"
                 + "case \"$INTERP\" in\n"
                 + "  */bin/python*)\n"
                 + "    MOD=${CMD##*/}\n"
@@ -346,7 +433,9 @@ public final class CommandResolver {
                         + "      RC=$?\n"
                         + "      if [ $RC -ne 2 ]; then exit $RC; fi\n"
                         + "    fi\n")
-                + "    exec " + linker + " \"$INTERP\" -m \"$MOD\" \"$@\" ;;\n"
+                + "    # Se ejecuta el script tal cual: -m solo vale para entry\n"
+                + "    # points de consola, no para un script python cualquiera.\n"
+                + "    exec " + linker + " \"$INTERP\" \"$CMD\" \"$@\" ;;\n"
                 + "esac\n"
                 + "# Un script no necesita las libs del prefijo, pero si las hereda\n"
                 + "# los binarios del sistema que lance fallan al enlazar\n"
@@ -466,11 +555,31 @@ public final class CommandResolver {
                 + "fi\n"
                 + "case \"$0\" in */*) OWN=${0%/*} ;; *) OWN=. ;; esac\n"
                 + "APP_FILES=${OWN%/usr/bin}\n"
+                + "# Rutas absolutas del prefijo al principio del comando: se quitan\n"
+                + "# para que el comando pase por la funcion/trampolin de PATH. Ej:\n"
+                + "#   $PREFIX/bin/aapt2 version -> aapt2 version\n"
+                + "case \"$CMD\" in\n"
+                + "  '$PREFIX'/bin/*) CMD=${CMD#'$PREFIX'/bin/} ;;\n"
+                + "  '${PREFIX}'/bin/*) CMD=${CMD#'${PREFIX}'/bin/} ;;\n"
+                + "  /data/data/*/files/usr/bin/*|/data/user/0/*/files/usr/bin/*)\n"
+                + "    CMD=${CMD#*/files/usr/bin/} ;;\n"
+                + "esac\n"
+                + "# pkg/apt install: instalador verificado de la app (indice,\n"
+                + "# dependencias, SHA-256 y extraccion en Java). No se usa apt/dpkg\n"
+                + "# a pelo: su prefijo compilado es el de Termux.\n"
+                + "case \"$CMD\" in\n"
+                + "  \"pkg install \"*|\"pkg add \"*|\"apt install \"*|\"apt-get install \"*)\n"
+                + "    if [ -f \"$OWN/" + PKG_NAME + "\" ]; then\n"
+                + "      exec /system/bin/sh \"$OWN/" + PKG_NAME + "\" \"$CMD\"\n"
+                + "    fi ;;\n"
+                + "esac\n"
+                + "FIRSTWORD=\"\"\n"
                 + "HAS_GIT=0\n"
                 + "GIT_HELPER=0\n"
                 + "for RAW in $CMD; do\n"
                 + "  W=${RAW#\\\"}; W=${W%\\\"}; W=${W#\\'}; W=${W%\\'}\n"
                 + "  W=${W#\\(}; W=${W%\\)}; W=${W%;}; W=${W%|}; W=${W%&}\n"
+                 + "  if [ -z \"$FIRSTWORD\" ]; then FIRSTWORD=\"$W\"; fi\n"
                 + "  case \"$W\" in\n"
                 + "    adb|" + TERMUX_PREFIX + "/bin/adb|\"$APP_FILES/usr/bin/adb\")\n"
                 + "      exec /system/bin/sh \"$OWN/" + ADB_NAME + "\" \"$CMD\" ;;\n"
@@ -492,12 +601,94 @@ public final class CommandResolver {
                 + "if [ -f \"$OWN/" + NATIVE_ENV_NAME + "\" ]; then\n"
                 + "  . \"$OWN/" + NATIVE_ENV_NAME + "\"\n"
                 + "fi\n"
+                + "if [ -d \"$APP_FILES/usr/lib/go\" ]; then\n"
+                + "  export GOROOT=\"$APP_FILES/usr/lib/go\"\n"
+                + "fi\n"
                 + "OC_ENGINE=native\n"
                 + "export OC_ENGINE\n"
-                + "eval \"$CMD\"\n"
+                + ": \"${OC_NATIVE_LIB_PATH:=$PREFIX/lib:$HOME/lib}\"\n"
+                + "ERRF=\"$OWN/.oc-err-$$\"\n"
+                + "# Camino rapido: un solo comando simple que es un ELF del prefijo.\n"
+                + "# Se resuelve antes de eval para no depender del codigo de salida\n"
+                + "# (un pipeline o un 2>&1 ocultan el fallo de exec).\n"
+                + "SIMPLE=1\n"
+                + "case \"$CMD\" in\n"
+                + "  *\"|\"*|*\"<\"*|*\"&\"*|*'$('*|*'`'*) SIMPLE=0 ;;\n"
+                + "  *\">\"*|*';'*) SIMPLE=0 ;;\n"
+                + "esac\n"
+                + "if [ $SIMPLE -eq 1 ]; then\n"
+                + "  set -f\n"
+                + "  set -- $CMD\n"
+                + "  set +f\n"
+                + "  W=${1:-}\n"
+                + "  W=${W#\\\"}; W=${W%\\\"}; W=${W#\\'}; W=${W%\\'}\n"
+                + "  case \"$W\" in ''|*=*) W=\"\" ;; esac\n"
+                + "  if [ -n \"$W\" ]; then\n"
+                + "    BASE=${W##*/}\n"
+                + "    for CAND in \"$PREFIX/bin/$BASE\" \"$APP_FILES/usr/bin/$BASE\"; do\n"
+                + "      if [ -f \"$CAND\" ]; then\n"
+                + "        case \"$CMD\" in \"$W\"*) ARGS=${CMD#\"$W\"} ;; *) W=\"\" ;; esac\n"
+                + "        if [ -n \"$W\" ]; then\n"
+                + "          MAGIC=$(/system/bin/dd if=\"$CAND\" bs=1 count=4 2>/dev/null | /system/bin/od -An -tx1 | /system/bin/tr -d \" \\n\")\n"
+                + "          if [ \"$MAGIC\" = \"7f454c46\" ]; then\n"
+                + "            set -f; eval \"set -- $ARGS\"; set +f\n"
+                + "            LD_LIBRARY_PATH=\"$OC_NATIVE_LIB_PATH\" /system/bin/linker64 \"$CAND\" \"$@\"\n"
+                + "            exit $?\n"
+                + "          fi\n"
+                + "        fi\n"
+                + "        break\n"
+                + "      fi\n"
+                + "    done\n"
+                + "  fi\n"
+                + "fi\n"
+                + "eval \"$CMD\" 2>\"$ERRF\"\n"
                 + "RC=$?\n"
-                + "if [ $RC -eq 127 ]; then exec /system/bin/sh \"$OWN/" + PROOT_NAME + "\" \"$CMD\"; fi\n"
-                + "exit $RC\n";
+                + "BAD=0\n"
+                + "if [ $RC -eq 126 ] || [ $RC -eq 127 ]; then BAD=1; fi\n"
+                + "if [ $BAD -eq 0 ] && [ $RC -ne 0 ] && [ -s \"$ERRF\" ]; then\n"
+                + "  if /system/bin/grep -q -E 'CANNOT LINK EXECUTABLE|library .* not found|Permission denied|inaccessible or not found|not executable' \"$ERRF\" 2>/dev/null; then\n"
+                + "    BAD=1\n"
+                + "  fi\n"
+                + "fi\n"
+                + "if [ $BAD -eq 0 ]; then\n"
+                + "  if [ -s \"$ERRF\" ]; then /system/bin/cat \"$ERRF\" >&2; fi\n"
+                + "  /system/bin/rm -f \"$ERRF\"\n"
+                + "  exit $RC\n"
+                + "fi\n"
+                + "# Fallback: el comando existe pero no se pudo ejecutar (ELF del\n"
+                + "# prefijo sin linker, o script nuevo). Se prueba linker64/oc-run\n"
+                + "# antes de proot.\n"
+                + "BASE=${FIRSTWORD##*/}\n"
+                + "BASE=${BASE#\\\"}; BASE=${BASE%\\\"}; BASE=${BASE#\\'}; BASE=${BASE%\\'}\n"
+                + "MATCH=0\n"
+                + "case \"$CMD\" in \"$FIRSTWORD\"*) ARGS=${CMD#\"$FIRSTWORD\"}; MATCH=1 ;; esac\n"
+                + "# No reinterpretar redirecciones, tuberias ni sustituciones: si\n"
+                + "# las hay, el comando no es un argv simple y va a proot.\n"
+                + "case \"$ARGS\" in *'|'*|*'&'*|*';'*|*'<'*|*'>'*|*'$('*|*'`'*) MATCH=0 ;; esac\n"
+                + "if [ $MATCH -eq 1 ]; then\n"
+                + "  for CAND in \"$PREFIX/bin/$BASE\" \"$APP_FILES/usr/bin/$BASE\"; do\n"
+                + "    if [ -f \"$CAND\" ]; then\n"
+                + "      MAGIC=$(/system/bin/dd if=\"$CAND\" bs=1 count=4 2>/dev/null | /system/bin/od -An -tx1 | /system/bin/tr -d \" \\n\")\n"
+                + "      if [ \"$MAGIC\" = \"7f454c46\" ]; then\n"
+                + "        set -f; eval \"set -- $ARGS\"; set +f\n"
+                + "        LD_LIBRARY_PATH=\"$OC_NATIVE_LIB_PATH\" /system/bin/linker64 \"$CAND\" \"$@\"\n"
+                + "        RC2=$?\n"
+                + "        if [ $RC2 -ne 126 ] && [ $RC2 -ne 127 ]; then /system/bin/rm -f \"$ERRF\"; exit $RC2; fi\n"
+                + "      fi\n"
+                + "      if [ -x \"$OWN/" + RUN_NAME + "\" ]; then\n"
+                + "        set -f; eval \"set -- $ARGS\"; set +f\n"
+                + "        /system/bin/sh \"$OWN/" + RUN_NAME + "\" \"$CAND\" \"$@\"\n"
+                + "        RC2=$?\n"
+                + "        if [ $RC2 -ne 126 ] && [ $RC2 -ne 127 ]; then /system/bin/rm -f \"$ERRF\"; exit $RC2; fi\n"
+                + "      fi\n"
+                + "      break\n"
+                + "    fi\n"
+                + "  done\n"
+                + "fi\n"
+                + "if [ -s \"$ERRF\" ]; then /system/bin/cat \"$ERRF\" >&2; fi\n"
+                + "/system/bin/rm -f \"$ERRF\"\n"
+                + "/system/bin/sh \"$OWN/" + PROOT_NAME + "\" \"$CMD\"\n"
+                + "exit $?\n";
     }
 
     /**
@@ -569,6 +760,10 @@ public final class CommandResolver {
                 + "if [ \"$1\" = \"--interactive\" ]; then MODE=interactive; shift; fi\n"
                 + "CMD=\"${1:-}\"\n"
                 + "unset BASH_ENV ENV LD_PRELOAD\n"
+                + "# Nunca heredar configuraciones de apt/dpkg inventadas fuera del\n"
+                + "# sandbox: el prefijo compilado de estos binarios es el de Termux\n"
+                + "# y dentro de proot ya esta montado en esa ruta.\n"
+                + "unset APT_CONFIG DPKG_ADMIN_DIR DPKG_ROOT DPKG_INSTDIR\n"
                 + "if [ ! -d " + q(prefix.getAbsolutePath()) + " ]; then\n"
                 + "  echo \"proot: la caja de herramientas aun se esta instalando\" >&2\n"
                 + "  exit 127\n"
@@ -584,6 +779,8 @@ public final class CommandResolver {
                 + "export TERMUX_HOME=" + q(TERMUX_PREFIX) + "\n"
                 + "export TERMUX_VERSION=0.118.0\n"
                 + "export TERMUX_PKG_NO_MIRROR_SELECT=1\n"
+                + "export DEBIAN_FRONTEND=noninteractive\n"
+                + "export APT_LISTCHANGES_FRONTEND=none\n"
                 + "export PATH=" + q(TERMUX_PREFIX + "/bin:/system/bin:/system/xbin:/vendor/bin") + "\n"
                 + "export LD_LIBRARY_PATH=" + q(TERMUX_PREFIX + "/lib:" + new File(home, "lib").getAbsolutePath()
                         + ":" + nd.getAbsolutePath()) + "\n"
@@ -619,6 +816,160 @@ public final class CommandResolver {
                 + "  -b " + q(new File(etc, "resolv.conf").getAbsolutePath() + ":/etc/resolv.conf") + " \\\n"
                 + "  -w \"$WORKDIR\" \\\n"
                 + "  \"$@\"\n";
+    }
+
+    /**
+     * Instalador de paquetes verificado (oc-pkg).
+     *
+     *  Sustituye a "pkg install" / "apt install" dentro del shell nativo: la
+     *  app resuelve dependencias contra su indice, verifica SHA-256, extrae y
+     *  registra con dpkg dentro de proot. Asi el agente no pelea con el
+     *  prefijo compilado de Termux ni inventa APT_CONFIG.
+     *
+     *  Espera a que termine y devuelve un codigo de salida real, para que el
+     *  agente sepa si el paquete quedo instalado antes de usarlo.
+     */
+    private static String pkgScript(File binDir, File home, File nd, File prefixDir) {
+        String realPrefix = prefixDir == null ? TERMUX_PREFIX
+                : prefixDir.getAbsolutePath().replace("/data/user/0/", "/data/data/");
+        String homePath = home.getAbsolutePath().replace("/data/user/0/", "/data/data/");
+        String libPath = realPrefix + "/lib:" + homePath + "/lib:" + nd.getAbsolutePath();
+        String ca = realPrefix + "/etc/tls/cert.pem";
+        return "#!/system/bin/sh\n"
+                + "# Generado por CommandResolver. No editar a mano.\n"
+                + "# Instalador verificado de OpenCode: indice propio, dependencias,\n"
+                + "# SHA-256 y extraccion en Java. No usa apt/dpkg a pelo.\n"
+                + "CMD=\"$*\"\n"
+                + "case \"$CMD\" in\n"
+                + "  pkg\\ install\\ *|pkg\\ add\\ *|pkg\\ i\\ *|apt\\ install\\ *|apt-get\\ install\\ *)\n"
+                + "    ;;\n"
+                + "  pkg\\ update*|apt\\ update*|apt-get\\ update*)\n"
+                + "    echo 'oc-pkg: the index is refreshed automatically on install.'\n"
+                + "    exit 0 ;;\n"
+                + "  '')\n"
+                + "    echo 'usage: pkg install <package>...' >&2\n"
+                + "    exit 2 ;;\n"
+                + "  *)\n"
+                + "    echo \"oc-pkg: only install is handled here: $CMD\" >&2\n"
+                + "    exit 2 ;;\n"
+                + "esac\n"
+                + "SKIP=2\n"
+                + "PKGS=\"\"\n"
+                + "BAD=\"\"\n"
+                + "set -f\n"
+                + "for A in $CMD; do\n"
+                + "  if [ $SKIP -gt 0 ]; then SKIP=$((SKIP-1)); continue; fi\n"
+                + "  A=${A#\\\"}; A=${A%\\\"}; A=${A#\\'}; A=${A%\\'}\n"
+                + "  case \"$A\" in --) continue ;; -*) continue ;; esac\n"
+                + "  case \"$A\" in *[!A-Za-z0-9+._-]*) BAD=\"$A\"; break ;; esac\n"
+                + "  case \",$PKGS,\" in *\",$A,\"*) continue ;; esac\n"
+                + "  PKGS=\"$PKGS,$A\"\n"
+                + "done\n"
+                + "set +f\n"
+                + "if [ -n \"$BAD\" ]; then\n"
+                + "  echo \"oc-pkg: invalid package name: $BAD\" >&2\n"
+                + "  exit 2\n"
+                + "fi\n"
+                + "PKGS=${PKGS#,}\n"
+                + "if [ -z \"$PKGS\" ]; then\n"
+                + "  echo 'usage: pkg install <package>...' >&2\n"
+                + "  exit 2\n"
+                + "fi\n"
+                + "PORT=${OPENCODE_TOOLBOX_PORT:-" + ToolboxServer.PORT + "}\n"
+                + "TOK=${OPENCODE_TOOLBOX_TOKEN:-}\n"
+                + "if [ -z \"$TOK\" ]; then\n"
+                + "  echo 'oc-pkg: the toolbox token is missing; restart the local server' >&2\n"
+                + "  exit 1\n"
+                + "fi\n"
+                + "CURL=" + q(realPrefix + "/bin/curl") + "\n"
+                + "if [ ! -f \"$CURL\" ]; then\n"
+                + "  echo 'oc-pkg: curl is not installed yet; finish the toolbox install' >&2\n"
+                + "  exit 1\n"
+                + "fi\n"
+                + "oc_curl() { LD_LIBRARY_PATH=" + q(libPath) + " CURL_CA_BUNDLE=" + q(ca)
+                + " SSL_CERT_FILE=" + q(ca) + " " + LINKER + " \"$CURL\" --noproxy '*'"
+                + " -H \"X-OpenCode-Token: $TOK\" \"$@\"; }\n"
+                + "URL=\"http://127.0.0.1:$PORT\"\n"
+                + "field() {\n"
+                + "  printf '%s\\n' \"$1\" | while IFS= read -r L; do\n"
+                + "    case \"$L\" in\n"
+                + "      \"$2\"=*) printf '%s' \"${L#*=}\"; break ;;\n"
+                + "    esac\n"
+                + "  done\n"
+                + "}\n"
+                + "wait_idle() {\n"
+                + "  N=0\n"
+                + "  MISS=0\n"
+                + "  LAST=''\n"
+                + "  while :; do\n"
+                + "    S=$(oc_curl -s --max-time 5 \"$URL/install/status\" 2>/dev/null)\n"
+                + "    if [ -z \"$S\" ]; then\n"
+                + "      # dpkg puede reemplazar curl mientras se instala: un fallo\n"
+                + "      # aislado no significa que la app se haya caido.\n"
+                + "      MISS=$((MISS+1))\n"
+                + "      if [ $MISS -ge 30 ]; then\n"
+                + "        echo 'oc-pkg: the app stopped responding' >&2\n"
+                + "        return 1\n"
+                + "      fi\n"
+                + "      sleep 1\n"
+                + "      continue\n"
+                + "    fi\n"
+                + "    MISS=0\n"
+                + "    case \"$S\" in *\"running=\"*) ;; *)\n"
+                + "      echo \"oc-pkg: unexpected status: $S\" >&2\n"
+                + "      return 1 ;;\n"
+                + "    esac\n"
+                + "    case \"$S\" in *\"running=0\"*) return 0 ;; esac\n"
+                + "    ST=$(field \"$S\" step)\n"
+                + "    if [ -n \"$ST\" ] && [ \"$ST\" != \"$LAST\" ]; then\n"
+                + "      echo \"oc-pkg: $ST\"\n"
+                + "      LAST=\"$ST\"\n"
+                + "    fi\n"
+                + "    N=$((N+1))\n"
+                + "    if [ $N -ge 3600 ]; then\n"
+                + "      echo 'oc-pkg: timed out waiting for the installer' >&2\n"
+                + "      return 1\n"
+                + "    fi\n"
+                + "    sleep 1\n"
+                + "  done\n"
+                + "}\n"
+                + "S=$(oc_curl -s --max-time 5 \"$URL/install/status\" 2>/dev/null)\n"
+                + "if [ -z \"$S\" ]; then\n"
+                + "  echo 'oc-pkg: no response from the app; is the local server running?' >&2\n"
+                + "  exit 1\n"
+                + "fi\n"
+                + "case \"$S\" in *\"running=1\"*)\n"
+                + "  echo 'oc-pkg: another install is running; waiting for it to finish...'\n"
+                + "  wait_idle || exit 1 ;;\n"
+                + "esac\n"
+                + "echo \"oc-pkg: installing $PKGS\"\n"
+                + "TRY=0\n"
+                + "RESP=''\n"
+                + "while [ $TRY -lt 3 ]; do\n"
+                + "  RESP=$(oc_curl -s --max-time 10 -X POST \\\n"
+                + "    --data \"pkgs=$PKGS&token=$TOK\" \"$URL/install\" 2>/dev/null)\n"
+                + "  case \"$RESP\" in\n"
+                + "    *'\"ok\":true'*) break ;;\n"
+                + "    *busy*) wait_idle || exit 1 ;;\n"
+                + "    *)\n"
+                + "      echo \"oc-pkg: install request failed: $RESP\" >&2\n"
+                + "      exit 1 ;;\n"
+                + "  esac\n"
+                + "  TRY=$((TRY+1))\n"
+                + "done\n"
+                + "case \"$RESP\" in *'\"ok\":true'*) ;; *)\n"
+                + "  echo 'oc-pkg: the installer stayed busy; try again' >&2\n"
+                + "  exit 1 ;;\n"
+                + "esac\n"
+                + "wait_idle || exit 1\n"
+                + "FINAL=$(oc_curl -s --max-time 5 \"$URL/install/status\" 2>/dev/null)\n"
+                + "ERR=$(field \"$FINAL\" error)\n"
+                + "INST=$(field \"$FINAL\" installed)\n"
+                + "if [ -n \"$ERR\" ]; then\n"
+                + "  echo \"oc-pkg: install failed: $ERR\" >&2\n"
+                + "  exit 1\n"
+                + "fi\n"
+                + "echo \"oc-pkg: installed: ${INST:-$PKGS}\"\n";
     }
 
     private static String q(String value) {

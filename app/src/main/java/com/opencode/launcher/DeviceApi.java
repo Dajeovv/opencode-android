@@ -1228,7 +1228,17 @@ public final class DeviceApi {
         JSONObject o = new JSONObject();
         try {
             String path = arg(args, 0);
-            String sha = arg(args, 1).trim().toLowerCase(Locale.US);
+            String shaRaw = arg(args, 1).trim();
+            // El segundo argumento puede ser un sha256 o el flag "open" (si el
+            // agente llama `termux-install-apk <ruta> open`). Solo se trata
+            // como hash si parece un sha256 de 64 hex; si no, se ignora para
+            // no fallar con "sha256 mismatch" inesperado.
+            boolean shaLooksLikeHash = shaRaw.matches("[0-9a-fA-F]{64}");
+            String sha = shaLooksLikeHash ? shaRaw.toLowerCase(Locale.US) : "";
+            String openArg = arg(args, 2).trim();
+            if (!shaLooksLikeHash && shaRaw.equalsIgnoreCase("open")) {
+                openArg = "open";
+            }
             if (path == null || path.trim().isEmpty()) {
                 o.put("error", "no path");
                 return o.toString();
@@ -1287,7 +1297,7 @@ public final class DeviceApi {
             pendingPkg = pkg;
             pendingRetried = false;
             // Tercer argumento "open": al terminar de instalarse, se abre.
-            pendingOpen = arg(args, 2).trim().equalsIgnoreCase("open");
+            pendingOpen = openArg.equalsIgnoreCase("open");
 
             // 1) Con root: instalacion silenciosa, sin que el usuario pulse
             //    nada. El APK se copia a /data/local/tmp porque el servidor

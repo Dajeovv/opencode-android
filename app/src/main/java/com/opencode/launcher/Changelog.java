@@ -13,6 +13,7 @@ final class Changelog {
     }
 
     static String[] forVersion(String version, boolean en) {
+        if ("5.0.4".equals(version)) return en ? EN_504 : ES_504;
         if ("5.0.3".equals(version)) return en ? EN_503 : ES_503;
         return en ? EN_GENERIC : ES_GENERIC;
     }
@@ -63,6 +64,39 @@ final class Changelog {
             "The server password is no longer exposed in the agent's shell.",
             "Built-in WARP: opencode.ai traffic can go out over "
                     + "Cloudflare, toggle it from the controls menu."
+    };
+
+    private static final String[] ES_504 = new String[]{
+            "La app arranca en segundos: el chat aparece antes y las "
+                    + "herramientas terminan de instalarse en segundo plano.",
+            "Instala herramientas desde el chat con pkg install y úsalas en "
+                    + "cuanto termine, sin pasos extra.",
+            "Compilar, firmar e instalar apps Android desde el móvil ahora es "
+                    + "más fácil: la app ya está preparada y el agente sabe cómo "
+                    + "hacerlo.",
+            "La versión de opencode que elijas se conserva al actualizar la app.",
+            "Si una instalación se corta, al repetirla continúa donde se quedó.",
+            "El selector de versiones responde al instante y permite volver a "
+                    + "versiones anteriores.",
+            "La barra de inicio ya no retrocede y el terminal usa siempre el "
+                    + "shell de la app."
+    };
+
+    private static final String[] EN_504 = new String[]{
+            "The app starts in seconds: the chat appears first and tools "
+                    + "finish installing in the background.",
+            "Install tools from the chat with pkg install and use them as soon "
+                    + "as it finishes, with no extra steps.",
+            "Building, signing and installing Android apps from the phone is "
+                    + "now easier: the app is ready for it and the agent knows "
+                    + "how to do it.",
+            "The opencode version you choose is kept when the app updates.",
+            "If an install is interrupted, running it again continues where it "
+                    + "left off.",
+            "The version picker responds immediately and lets you go back to "
+                    + "older versions.",
+            "The start screen progress no longer moves backwards, and the "
+                    + "terminal always uses the app's shell."
     };
 
     private static final String[] ES_GENERIC = new String[]{
