@@ -9,14 +9,14 @@
 <p align="center">
   <a href="https://github.com/Dajeovv/opencode-android/releases"><img src="https://img.shields.io/github/v/release/Dajeovv/opencode-android?filter=v5.*&amp;style=flat&amp;label=v2&amp;labelColor=21262d&amp;color=7C5CFF" alt="Latest v2 release"></a>
   <a href="https://github.com/Dajeovv/opencode-android/releases"><img src="https://img.shields.io/github/v/release/Dajeovv/opencode-android?filter=v4.*&amp;style=flat&amp;label=v1&amp;labelColor=21262d&amp;color=7C5CFF" alt="Latest v1 release"></a>
-  <img src="https://img.shields.io/badge/opencode-2.2.0%2B%20%2F%201.19.4%2B%20bundled-30363d?style=flat&amp;labelColor=21262d" alt="opencode 2.2.0+ / 1.19.4+ bundled (updates to latest)">
+  <img src="https://img.shields.io/badge/opencode-2.2.7%2B%20%2F%201.19.4%2B%20bundled-30363d?style=flat&amp;labelColor=21262d" alt="opencode 2.2.7+ / 1.19.4+ bundled (updates to latest)">
   <img src="https://img.shields.io/badge/android-8%2B-30363d?style=flat&amp;labelColor=21262d" alt="Android 8+">
   <img src="https://img.shields.io/badge/arch-arm64-30363d?style=flat&amp;labelColor=21262d" alt="arm64">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-30363d?style=flat&amp;labelColor=21262d" alt="MIT"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.3"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
+  <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v5.0.4"><img src="docs/download-v2.png" alt="Download OpenCode Android v2 APK" width="260"></a>
   &nbsp;&nbsp;
   <a href="https://github.com/Dajeovv/opencode-android/releases/tag/v4.0.3"><img src="docs/download-v1.png" alt="Download OpenCode Android v1 APK" width="260"></a>
 </p>
@@ -32,7 +32,7 @@
 > [!IMPORTANT]
 > **Two editions, two APKs, installed side by side.**
 > **v1** is the classic chat-first app (`com.opencode.launcher.next`, opencode 1.19.4). It updates in place from 4.0.x and keeps its sessions, projects, runtime and root grant.
-> **v2** is the new 2.x interface (`com.opencode.android`, opencode 2.2.0). It is a separate app with its own private storage, so it starts fresh; v1 sessions are **not** migrated automatically.
+> **v2** is the new 2.x interface (`com.opencode.android`, opencode 2.2.7). It is a separate app with its own private storage, so it starts fresh; v1 sessions are **not** migrated automatically.
 > Both are standalone: the agent runs entirely on the phone, with no Termux, no PC and no setup.
 
 [opencode](https://github.com/anomalyco/opencode) is a real coding agent, not just a chatbot. It can inspect and edit files, run commands, and — with wireless ADB — control apps and the UI, all from your phone.
@@ -48,7 +48,7 @@
 | | **v1 — classic** | **v2 — new UI** |
 |---|---|---|
 | **Package** | `com.opencode.launcher.next` | `com.opencode.android` |
-| **opencode** | 1.19.4 (updates within 1.x) | 2.2.0 (updates within 2.x) |
+| **opencode** | 1.19.4 (updates within 1.x) | 2.2.7 (updates within 2.x) |
 | **Terminal** | — | Integrated shell (pkg, apt, git, python…) |
 | **WARP** | — | Cloudflare WARP for opencode.ai |
 | **Remote server** | — | Connect to a PC via QR code or pairing link |
@@ -61,7 +61,7 @@ Both editions use the same release signing key, so future updates install over t
 ## What you get
 
 - **The app is the chat.** No Termux, no PC, no wizard. Open the app, the server starts by itself, and the chat appears as soon as it is healthy.
-- **Native ARM64 runtime.** opencode is embedded in the APK and runs as a native process. v2 bundles 2.2.0; v1 bundles 1.19.4.
+- **Native ARM64 runtime.** opencode is embedded in the APK and runs as a native process. v2 bundles 2.2.7; v1 bundles 1.19.4.
 - **A full toolchain, already installed.** `git`, `python3` + `pip3`, `node`, `ssh`, `make`, `curl`, `wget`, `bash`, `coreutils`, `apt`/`pkg`.
 - **Extensible.** `pkg install clang`, `rust`, `go`, `ffmpeg`, `cmake`… straight from the chat.
 - **Phone access.** Battery, clipboard, sensors, Wi-Fi, brightness, volume, toasts, and vibration through `termux-*` commands.
